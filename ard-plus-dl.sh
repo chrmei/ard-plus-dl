@@ -3,36 +3,268 @@ curlBin=$(which curl)
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
 FILE=ard-plus-token
-# parse input parameter
-if [ "$1" == "--automatic" ]
-then
-  automatic_download=1
-  shift
+automatic_download=0
+batch_mode=0
+links_file=''
+DOWNLOAD_FAIL_REASON=''
+skip_existing_files=1
+
+# parse input parameters
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --automatic)
+            automatic_download=1
+            shift
+            ;;
+        --links-file)
+            batch_mode=1
+            links_file=$2
+            shift 2
+            ;;
+        --force-redownload)
+            skip_existing_files=0
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $batch_mode -eq 1 ]]; then
+    username=$1
+    password=$2
+    skip=$3
 else
-  automatic_download=0
+    ardPlusUrl=$1
+    username=$2
+    password=$3
+    skip=$4
 fi
-ardPlusUrl=$1
-username=$2
-password=$3
-skip=$4
 movieId=''
 token=''
-showPath=$(echo $ardPlusUrl | rev | cut -d "/" -f1 | rev)
-showId=$(echo $showPath | cut -d "-" -f1)
 
-if [[ -z "$username" || -z "$password" ]]
-then
-  echo "Credentials missing! Please start the script with 3 parameters: "
-  echo "./ard-plus-dl <ard-plus-url> <username> <password>"
-  exit 1
+if [[ -z "$username" || -z "$password" ]]; then
+    echo "Credentials missing! Please start the script with:"
+    echo "  ./ard-plus-dl.sh [--automatic] [--links-file <file>] <ard-plus-url> <username> <password>"
+    echo "  ./ard-plus-dl.sh [--automatic] --links-file <file> <username> <password>"
+    exit 1
 fi
 
-if [[ -z "$skip" ]]
-then
+if [[ $batch_mode -eq 1 ]]; then
+    if [[ -z "$links_file" || ! -f "$links_file" ]]; then
+        echo "Links file missing or not found: $links_file"
+        exit 1
+    fi
+    automatic_download=1
+    links_dir=$(cd "$(dirname "$links_file")" && pwd)
+    links_file="$links_dir/$(basename "$links_file")"
+elif [[ -z "$ardPlusUrl" ]]; then
+    echo "URL or --links-file required."
+    exit 1
+fi
+
+if [[ -z "$skip" ]]; then
     skip=1
 fi
 
+work_dir=$(pwd)
+if [[ $batch_mode -eq 1 ]]; then
+    work_dir="$links_dir"
+fi
+downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
+mkdir -p "$downloads_dir"
+
 content_result=$(mktemp)
+RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
+
+if [[ $batch_mode -eq 1 ]]; then
+    logs_dir="$links_dir/logs"
+    mkdir -p "$logs_dir"
+    SUCCESS_FILE="$logs_dir/successful_links_${RUN_TS}.txt"
+    FAILED_FILE="$logs_dir/failed_links_${RUN_TS}.txt"
+    LOG_FILE="$logs_dir/download_log_${RUN_TS}.txt"
+    touch "$SUCCESS_FILE" "$FAILED_FILE" "$LOG_FILE"
+fi
+
+log_msg() {
+    echo "$1"
+    if [[ $batch_mode -eq 1 ]]; then
+        echo "$1" >> "$LOG_FILE"
+    fi
+}
+
+# #region agent log
+DEBUG_LOG="/Users/cmeister/Repos/ard-plus-dl/.cursor/debug-253e98.log"
+debug_log() {
+    local hypothesis_id="$1" location="$2" message="$3" data_json="$4"
+    mkdir -p "$(dirname "$DEBUG_LOG")"
+    printf '{"sessionId":"253e98","hypothesisId":"%s","location":"%s","message":"%s","data":%s,"timestamp":%s}\n' \
+        "$hypothesis_id" "$location" "$message" "$data_json" "$(date +%s000)" >> "$DEBUG_LOG"
+}
+# #endregion
+
+graphql_needs_retry() {
+    local outfile="$1"
+    local response error_msg
+    [[ -f "$outfile" ]] || return 0
+    response=$(cat "$outfile")
+    error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+    if [[ "$error_msg" == "PersistedQueryNotFound" ]]; then
+        return 0
+    fi
+    if echo "$response" | jq -e '.data | values | length > 0' >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
+fetch_graphql() {
+    local url="$1"
+    local outfile="$2"
+    local max_retries=8
+    local attempt=1
+    local status error_msg
+
+    while [[ $attempt -le $max_retries ]]; do
+        status=$("$curlBin" -s -o "$outfile" -w "%{http_code}" "$url" \
+            -H 'authority: data.ardplus.de' \
+            -H 'content-type: application/json' \
+            -H "cookie: sid=$token" \
+            -H 'origin: https://www.ardplus.de' \
+            -H 'referer: https://www.ardplus.de/' \
+            -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
+
+        if [[ "$status" == "200" ]] && ! graphql_needs_retry "$outfile"; then
+            # #region agent log
+            debug_log "B" "ard-plus-dl.sh:fetch_graphql" "graphql fetch succeeded" "{\"attempt\":${attempt},\"httpStatus\":${status}}"
+            # #endregion
+            echo "$status"
+            return 0
+        fi
+
+        error_msg=$(jq -r '.errors[0].message // empty' "$outfile" 2>/dev/null)
+        # #region agent log
+        debug_log "B" "ard-plus-dl.sh:fetch_graphql:retry" "graphql fetch retry" "{\"attempt\":${attempt},\"httpStatus\":${status},\"error\":\"${error_msg}\"}"
+        # #endregion
+        log_msg "GraphQL request failed (attempt ${attempt}/${max_retries}, HTTP ${status}, error: ${error_msg:-empty data}), retrying..." >&2
+
+        if [[ $attempt -lt $max_retries ]]; then
+            sleep $((attempt))
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+resolve_download_path() {
+    echo "${downloads_dir}/${1}"
+}
+
+output_mp4_path() {
+    echo "$(resolve_download_path "$1").mp4"
+}
+
+has_incomplete_artifacts() {
+    local filename="$1"
+    local output_path dir base
+    output_path=$(output_mp4_path "$filename")
+    dir=$(dirname "$output_path")
+    base=$(basename "$output_path" .mp4)
+
+    compgen -G "${dir}/${base}"*.part* > /dev/null && return 0
+    compgen -G "${dir}/${base}"*.ytdl > /dev/null && return 0
+    [[ -f "${output_path}.ytdl" ]] && return 0
+    return 1
+}
+
+cleanup_incomplete_files() {
+    local filename="$1"
+    local output_path dir base f
+    output_path=$(output_mp4_path "$filename")
+    dir=$(dirname "$output_path")
+    base=$(basename "$output_path" .mp4)
+
+    shopt -s nullglob
+    for f in "${dir}/${base}"*.part* "${dir}/${base}"*.ytdl "${output_path}.ytdl"; do
+        log_msg "Removing incomplete file: ${f}"
+        rm -f -- "$f"
+    done
+    shopt -u nullglob
+}
+
+is_complete_file() {
+    local filename="$1"
+    local output_path
+    output_path=$(output_mp4_path "$filename")
+
+    [[ -f "$output_path" && -s "$output_path" ]] || return 1
+    has_incomplete_artifacts "$filename" && return 1
+    return 0
+}
+
+skip_if_exists() {
+    local filename="$1"
+    local output_path
+    output_path=$(output_mp4_path "$filename")
+
+    if [[ $skip_existing_files -eq 1 ]]; then
+        if [[ -f "$output_path" && -s "$output_path" ]] && has_incomplete_artifacts "$filename"; then
+            cleanup_incomplete_files "$filename"
+            log_msg "SKIP (already exists): ${output_path}"
+            return 0
+        fi
+        if is_complete_file "$filename"; then
+            log_msg "SKIP (already exists): ${output_path}"
+            return 0
+        fi
+    fi
+
+    cleanup_incomplete_files "$filename"
+    if [[ -f "$output_path" ]]; then
+        log_msg "Incomplete file, re-downloading: ${output_path}"
+    fi
+    return 1
+}
+
+normalize_url() {
+    local url="$1"
+    url="${url%%#*}"
+    url="${url%"${url##*[![:space:]]}"}"
+    url="${url#"${url%%[![:space:]]*}"}"
+    url="${url%/}"
+    echo "$url"
+}
+
+record_success() {
+    echo "$1" >> "$SUCCESS_FILE"
+    log_msg "Recorded success: $1"
+}
+
+record_failure() {
+    local url="$1"
+    local reason="$2"
+    reason="${reason//$'\t'/ }"
+    reason="${reason//$'\n'/ }"
+    printf '%s\t%s\n' "$url" "$reason" >> "$FAILED_FILE"
+    log_msg "Recorded failure: $url ($reason)"
+}
+
+run_yt_dlp() {
+    local downloadUrl="$1"
+    local filename="$2"
+    local label="$3"
+    local output_path
+    output_path=$(resolve_download_path "$filename")
+    if ! yt-dlp --quiet --progress --no-warnings --audio-multistreams \
+        -f "bv+mergeall[vcodec=none]" --sub-langs "en.*,de.*" --embed-subs \
+        --merge-output-format mp4 "${downloadUrl}" -o "$output_path"; then
+        DOWNLOAD_FAIL_REASON="yt-dlp download failed for ${label}"
+        return 1
+    fi
+    return 0
+}
 
 # login only if necessary
 login() {
@@ -82,6 +314,267 @@ auth() {
     echo "$urlParam"
 }
 
+ensure_token() {
+    if [ -f "$FILE" ]; then
+        token=$(<$FILE)
+    else
+        login $username $password
+    fi
+
+    movieId="a0S010000007GcX"
+    urlParam=$( auth )
+    if [[ "$urlParam" == null ]]; then
+        login $username $password
+        token=$(<$FILE)
+        if [[ -z "$token" ]]; then
+            echo "Login not possible! Please check credentials and subscription for user $username."
+            exit 1
+        fi
+    fi
+    cleanup
+}
+
+download_url() {
+    local ardPlusUrl="$1"
+    local episode_skip="$2"
+    local showPath showId contentUrl seasonsStatus contentResult movie tvshow
+
+    DOWNLOAD_FAIL_REASON=''
+    showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
+    showId=$(echo "$showPath" | cut -d "-" -f1)
+
+    # #region agent log
+    debug_log "A" "ard-plus-dl.sh:download_url:entry" "download_url started" "{\"url\":\"${ardPlusUrl}\",\"showPath\":\"${showPath}\",\"showId\":\"${showId}\",\"tokenLen\":${#token},\"tokenFileExists\":$([ -f \"$FILE\" ] && echo true || echo false)}"
+    # #endregion
+
+    contentUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$showId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
+    if ! seasonsStatus=$(fetch_graphql "${contentUrl}" "$content_result"); then
+        local metadata_error
+        metadata_error=$(jq -r '.errors[0].message // empty' "$content_result" 2>/dev/null)
+        if [[ -n "$metadata_error" ]]; then
+            DOWNLOAD_FAIL_REASON="could not fetch content metadata (graphql: ${metadata_error})"
+        else
+            DOWNLOAD_FAIL_REASON="could not fetch content metadata (retries exhausted)"
+        fi
+        return 1
+    fi
+
+    contentResult=$(cat $content_result)
+    movie=$(echo "$contentResult" | jq '.data.movie')
+    tvshow=$(echo "$contentResult" | jq '.data.series')
+
+    # #region agent log
+    local graphql_errors response_preview movie_is_null tvshow_is_null series_title
+    graphql_errors=$(echo "$contentResult" | jq -c '.errors // null' 2>/dev/null || echo '"jq_errors_parse_failed"')
+    response_preview=$(echo "$contentResult" | head -c 300 | jq -Rs '.' 2>/dev/null || echo '"preview_unavailable"')
+    movie_is_null=$([[ "$movie" == null ]] && echo true || echo false)
+    tvshow_is_null=$([[ "$tvshow" == null ]] && echo true || echo false)
+    series_title=$(echo "$contentResult" | jq -r '.data.series.title // empty' 2>/dev/null)
+    debug_log "B" "ard-plus-dl.sh:download_url:graphql" "graphql response parsed" "{\"httpStatus\":${seasonsStatus},\"errors\":${graphql_errors},\"responsePreview\":${response_preview},\"movieIsNull\":${movie_is_null},\"tvshowIsNull\":${tvshow_is_null},\"seriesTitle\":\"${series_title}\",\"contentResultBytes\":${#contentResult}}"
+    # #endregion
+
+    if [[ "$movie" != null ]]; then
+        movieId=$(echo "$movie" | jq -r '.id')
+        name=$(echo "$movie" | jq -r '.title')
+        videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
+        year=$(echo "$movie" | jq -r '.productionYear')
+        filename="${name/\// } (${year})/${name/\// }"
+        if skip_if_exists "$filename"; then
+            return 0
+        fi
+        urlParam=$( auth )
+        if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+            DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for movie"
+            cleanup
+            return 1
+        fi
+        downloadUrl=${videoUrl}?${urlParam}
+        log_msg "Lade Film ${filename}..."
+        if ! run_yt_dlp "$downloadUrl" "$filename" "$name"; then
+            cleanup
+            return 1
+        fi
+        cleanup
+        return 0
+    elif [[ "$tvshow" != null ]]; then
+        local requestedShow seasonIds seasonCount seasonOutput selectedSeasonList selectedSeason
+        requestedShow=$(echo "$contentResult" | jq -r '.data.series.title')
+        seasonIds=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonInSeries, seasonId: .id, title: .title }]')
+        seasonCount=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonId }] | length')
+        seasonOutput=$(echo "$seasonIds" | jq '[.[] | { Option: .season, Titel: .title }]' | jq -r '(.[0]|keys_unsorted|(.,map(length*"-"))),.[]|map(.)|@tsv'|column -ts $'\t')
+        log_msg ""
+        log_msg "Gewünschte Serie: $requestedShow"
+        log_msg ""
+        log_msg "$seasonOutput"
+        log_msg ""
+
+        if [ $automatic_download -eq 0 ]; then
+            echo -n "Welche Staffel möchtest du runterladen? "
+            read -r selectedSeasonList
+        else
+            selectedSeasonList=$(seq 1 $seasonCount)
+        fi
+
+        for selectedSeason in $selectedSeasonList
+        do
+            local selectedSeasonId seasonData episodes amount selectedSeasonFormatted episode_line
+            selectedSeasonId=$(echo "$seasonIds" | jq -r ".[$((selectedSeason - 1))].seasonId")
+
+            local season_result episode_status
+            season_result=$(mktemp)
+            if ! episode_status=$(fetch_graphql "https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22134d75e1e68a9599d1cdccf790839d9d71d2e7d7dca57d96f95285fcfd02b2ae%22%7D%7D&variables=%7B%22seasonId%22%3A%22$selectedSeasonId%22%7D&operationName=EpisodesInSeasonData" "$season_result"); then
+                local episode_error
+                episode_error=$(jq -r '.errors[0].message // empty' "$season_result" 2>/dev/null)
+                rm -f "$season_result"
+                if [[ -n "$episode_error" ]]; then
+                    DOWNLOAD_FAIL_REASON="could not fetch episodes for season ${selectedSeason} (graphql: ${episode_error})"
+                else
+                    DOWNLOAD_FAIL_REASON="could not fetch episodes for season ${selectedSeason} (retries exhausted)"
+                fi
+                return 1
+            fi
+            seasonData=$(cat "$season_result")
+            rm -f "$season_result"
+            episodes=$(echo "$seasonData" | jq '[.data.episodes.nodes[]? | { id: .id, episodeNo: .episodeInSeason, title: .title, videoUrl: .videoSource.dashUrl }]')
+            amount=$(echo "$episodes" | jq '. | length')
+            if [[ "$amount" == "0" ]]; then
+                DOWNLOAD_FAIL_REASON="no episodes returned for season ${selectedSeason}"
+                return 1
+            fi
+            log_msg ""
+            log_msg "Staffel $selectedSeason hat $amount Folgen."
+            selectedSeasonFormatted=$(printf '%02d\n' "$selectedSeason")
+
+            if [[ $episode_skip != "1" ]]; then
+                log_msg "Überspringe $episode_skip Episode(n)."
+                episode_skip=$((episode_skip + 1))
+            fi
+
+            while read episode_line
+            do
+                local name videoUrl episode filename urlParam downloadUrl
+                movieId=$(echo "$episode_line" | jq -r '.id')
+                name=$(echo "$episode_line" | jq -r '.title')
+                videoUrl=$(echo "$episode_line" | jq -r '.videoUrl')
+                episode=$(echo "$episode_line" | jq -r '.episodeNo')
+                filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E$(printf '%02d\n' $episode) - ${name}"
+                if skip_if_exists "$filename"; then
+                    continue
+                fi
+                urlParam=$( auth )
+                if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+                    DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
+                    cleanup
+                    return 1
+                fi
+                downloadUrl=${videoUrl}?${urlParam}
+                log_msg "Lade ${filename}..."
+                if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
+                    cleanup
+                    return 1
+                fi
+                cleanup
+            done < <(echo "$episodes" | sed 's/\\"//g' | jq -c '.[]' | tail -n +$episode_skip)
+        done
+        return 0
+    elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
+        local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line
+        tatortCity=$(echo $showPath | cut -d "-" -f2)
+        tatortResponse=$("$curlBin" -s "https://www.ardplus.de/kategorie/$showPath" \
+        --header 'authority: data.ardplus.de' \
+        --header 'content-type: application/json' \
+        --header "cookie: sid=$token" \
+        --header 'origin: https://www.ardplus.de' \
+        --header 'referer: https://www.ardplus.de/' \
+        --header 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
+
+        tatortCityEpisodes=$(echo $tatortResponse | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
+        if [[ -z "$tatortCityEpisodes" ]]; then
+            DOWNLOAD_FAIL_REASON="could not parse Tatort episode list from category page"
+            return 1
+        fi
+
+        amount=$(echo $tatortCityEpisodes | jq '.itemListElement | length')
+        cityCapitalized=$(echo ${tatortCity} | awk '{$1=toupper(substr($1,0,1))substr($1,2)}1')
+        log_msg "Der Tatort ${cityCapitalized} hat $amount Episoden."
+        if [ $automatic_download -eq 0 ]; then
+            echo -n "Wie viele Episoden möchtest du überspringen? (0=alle laden) "
+            read -r episode_skip
+            log_msg "Überspringe $episode_skip Episode(n)."
+        else
+            episode_skip=0
+        fi
+        episode_skip=$((episode_skip + 1))
+
+        while read episode_line
+        do
+            local episodeId episodeUrl episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl
+            episodeId=$(echo "$episode_line" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
+            episodeUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$episodeId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
+
+            if ! episodeDetailsStatus=$(fetch_graphql "${episodeUrl}" "current-tatort-episode.txt"); then
+                local tatort_error
+                tatort_error=$(jq -r '.errors[0].message // empty' "current-tatort-episode.txt" 2>/dev/null)
+                if [[ -n "$tatort_error" ]]; then
+                    DOWNLOAD_FAIL_REASON="could not fetch Tatort episode details (graphql: ${tatort_error})"
+                else
+                    DOWNLOAD_FAIL_REASON="could not fetch Tatort episode details (retries exhausted)"
+                fi
+                return 1
+            fi
+
+            episodeDetails=$(cat current-tatort-episode.txt)
+            movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
+            name=$(echo "$episodeDetails" | jq -r '.data.movie.title')
+            videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
+            year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear')
+            customData=$(echo "$episodeDetails" | jq -r '.data.movie.customData')
+            episode=$(echo "$customData" | jq -r '.episodeProductionNumber')
+            team=$(echo "$customData" | jq -r '.team')
+            city=$(echo "$customData" | jq -r '.location')
+            filename="Tatort ${city}"
+            if [[ -n "$team" ]]; then
+                filename="$filename (${team})"
+            fi
+            if [[ "$episode" != null ]]; then
+                filename="$filename - Folge ${episode}"
+            fi
+            filename="$filename - ${name} (${year})"
+            if skip_if_exists "$filename"; then
+                continue
+            fi
+            urlParam=$( auth )
+            if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+                DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
+                cleanup
+                return 1
+            fi
+            downloadUrl=${videoUrl}?${urlParam}
+            log_msg "Lade ${filename}..."
+            if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
+                cleanup
+                return 1
+            fi
+            cleanup
+            sleep 1
+        done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$episode_skip )
+        return 0
+    else
+        # #region agent log
+        debug_log "C" "ard-plus-dl.sh:download_url:invalid" "fell through to invalid content branch" "{\"showId\":\"${showId}\",\"httpStatus\":${seasonsStatus},\"errors\":${graphql_errors},\"movieIsNull\":${movie_is_null},\"tvshowIsNull\":${tvshow_is_null}}"
+        # #endregion
+        if [[ "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" == "PersistedQueryNotFound" ]]; then
+            DOWNLOAD_FAIL_REASON="graphql API error: PersistedQueryNotFound (retries exhausted)"
+        elif [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
+            DOWNLOAD_FAIL_REASON="graphql API error: $(echo "$contentResult" | jq -r '.errors[0].message')"
+        else
+            DOWNLOAD_FAIL_REASON="invalid content (no movie or series in API response)"
+        fi
+        log_msg "$DOWNLOAD_FAIL_REASON"
+        return 1
+    fi
+}
+
 # intercept CTRL+C click to clean up before exit
 term() {
     echo "CTRL+C pressed. Cleanup and exit!"
@@ -91,206 +584,51 @@ term() {
 }
 trap term SIGINT
 
-# perform login
-if [ -f "$FILE" ]; then
-    # Using cached token
-    token=$(<$FILE)
-else 
-    # Log in once
-    login $username $password
-fi
+ensure_token
 
-# check if token is valid
-movieId="a0S010000007GcX"
-urlParam=$( auth )
-if [[ "$urlParam" == null ]]; then
-    login $username $password
-    token=$(<$FILE)
-    if [[ -z "$token" ]]; then
-        echo "Login not possible! Please check credentials and subscription for user $username."
-        exit 0
-    fi
-fi
-cleanup
+echo "Downloads directory: ${downloads_dir}"
 
-# get requested content
-contentUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$showId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
-seasonsStatus=$("$curlBin" -s -o $content_result -w "%{http_code}" "${contentUrl}" \
-    -H 'authority: data.ardplus.de' \
-    -H 'content-type: application/json' \
-    -H "cookie: sid=$token" \
-    -H 'origin: https://www.ardplus.de' \
-    -H 'referer: https://www.ardplus.de/' \
-    -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-if [[ $seasonsStatus != "200" ]]; then
-    #retry once
-    echo "Couldn't get season details. Trying again!"
-    sleep 2
-    seasonsStatus=$("$curlBin" -s -o $content_result -w "%{http_code}" "${contentUrl}" \
-    -H 'authority: data.ardplus.de' \
-    -H 'content-type: application/json' \
-    -H "cookie: sid=$token" \
-    -H 'origin: https://www.ardplus.de' \
-    -H 'referer: https://www.ardplus.de/' \
-    -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-    contentResult=$(cat $content_result)
-else
-    contentResult=$(cat $content_result)
-fi
+if [[ $batch_mode -eq 1 ]]; then
+    log_msg "Batch download started at ${RUN_TS}"
+    log_msg "Links file: ${links_file}"
+    log_msg "Downloads directory: ${downloads_dir}"
+    log_msg "Logs directory: ${logs_dir}"
+    log_msg "Download log: ${LOG_FILE}"
+    log_msg "Success log: ${SUCCESS_FILE}"
+    log_msg "Failed log: ${FAILED_FILE}"
+    log_msg ""
 
-# check whether content is movie or series
-movie=$(echo "$contentResult" | jq '.data.movie')
-tvshow=$(echo "$contentResult" | jq '.data.series')
+    while IFS= read -r link_line || [[ -n "$link_line" ]]; do
+        link_line="${link_line%%#*}"
+        link_line="${link_line%"${link_line##*[![:space:]]}"}"
+        link_line="${link_line#"${link_line%%[![:space:]]*}"}"
+        [[ -z "$link_line" ]] && continue
 
-if [[ "$movie" != null ]]; then
-    movieId=$(echo "$movie" | jq -r '.id')
-    name=$(echo "$movie" | jq -r '.title')
-    videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
-    year=$(echo "$movie" | jq -r '.productionYear')
-    filename="${name/\// } (${year})/${name/\// }"
-    urlParam=$( auth )
-    downloadUrl=${videoUrl}?${urlParam}
-    echo "Lade Film ${filename}..."
-    yt-dlp --quiet --progress --no-warnings --audio-multistreams -f "bv+mergeall[vcodec=none]" --sub-langs "en.*,de.*" --embed-subs --merge-output-format mp4 ${downloadUrl} -o "$filename"
-    cleanup
-elif [[ "$tvshow" != null ]]; then
-    requestedShow=$(echo "$contentResult" | jq -r '.data.series.title')
-    seasonIds=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonInSeries, seasonId: .id, title: .title }]')
-    seasonCount=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonId }] | length')
-    seasonOutput=$(echo "$seasonIds" | jq '[.[] | { Option: .season, Titel: .title }]' | jq -r '(.[0]|keys_unsorted|(.,map(length*"-"))),.[]|map(.)|@tsv'|column -ts $'\t')
-    echo -e "\nGewünschte Serie: $requestedShow\n"
-    echo -e "$seasonOutput\n"
+        normalized_link=$(normalize_url "$link_line")
+        log_msg "Processing: ${normalized_link}"
 
-    if [ $automatic_download -eq 0 ]
-    then
-        echo -n "Welche Staffel möchtest du runterladen? "
-        read -r selectedSeasonList
-    else
-        selectedSeasonList=$(seq 1 $seasonCount)
-    fi
-
-    # loop over all seasons
-    for selectedSeason in $selectedSeasonList
-    do
-        selectedSeasonId=$(echo "$seasonIds" | jq -r --argjson index 1 ".[$((selectedSeason - 1))].seasonId")
-
-        seasonData=$("$curlBin" -s "https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22134d75e1e68a9599d1cdccf790839d9d71d2e7d7dca57d96f95285fcfd02b2ae%22%7D%7D&variables=%7B%22seasonId%22%3A%22$selectedSeasonId%22%7D&operationName=EpisodesInSeasonData" \
-        -H 'authority: data.ardplus.de' \
-        -H 'content-type: application/json' \
-        -H "cookie: sid=$token" \
-        -H 'origin: https://www.ardplus.de' \
-        -H 'referer: https://www.ardplus.de/' \
-        -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-        episodes=$(echo $seasonData | jq '[.data.episodes.nodes[] | { id: .id, episodeNo: .episodeInSeason, title: .title, videoUrl: .videoSource.dashUrl }]')
-        amount=$(echo $episodes | jq '. | length')
-        echo -e "\nStaffel $selectedSeason hat $amount Folgen."
-        selectedSeasonFormatted=$(printf '%02d\n' "$selectedSeason")
-
-        if [[ $skip != "1" ]]; then
-            echo "Überspringe $skip Episode(n)."
-            skip=$((skip + 1))
-        fi
-
-        # loop over all episodes and download each
-        while read episode
-        do
-            movieId=$(echo "$episode" | jq -r '.id')
-            name=$(echo "$episode" | jq -r '.title')
-            videoUrl=$(echo "$episode" | jq -r '.videoUrl')
-            episode=$(echo "$episode" | jq -r '.episodeNo')
-            filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E$(printf '%02d\n' $episode) - ${name}"
-            urlParam=$( auth )
-            downloadUrl=${videoUrl}?${urlParam}
-            echo "Lade ${filename}..."
-            yt-dlp --quiet --progress --no-warnings --audio-multistreams -f "bv+mergeall[vcodec=none]" --sub-langs "en.*,de.*" --embed-subs --merge-output-format mp4 ${downloadUrl} -o "$filename"
-            cleanup
-        done < <(echo "$episodes" | sed 's/\\"//g' | jq -c '.[]' | tail -n +$skip)
-
-    done
-
-elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
-    tatortCity=$(echo $showPath | cut -d "-" -f2)
-    # get all episodes per city
-    tatortResponse=$("$curlBin" -s "https://www.ardplus.de/kategorie/$showPath" \
-    --header 'authority: data.ardplus.de' \
-    --header 'content-type: application/json' \
-    --header "cookie: sid=$token" \
-    --header 'origin: https://www.ardplus.de' \
-    --header 'referer: https://www.ardplus.de/' \
-    --header 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-
-    tatortCityEpisodes=$(echo $tatortResponse | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
-
-    amount=$(echo $tatortCityEpisodes | jq '.itemListElement | length')
-    cityCapitalized=$(echo ${tatortCity} | awk '{$1=toupper(substr($1,0,1))substr($1,2)}1')
-    echo "Der Tatort ${cityCapitalized} hat $amount Episoden."
-    if [ $automatic_download -eq 0 ]
-    then
-        echo -n "Wie viele Episoden möchtest du überspringen? (0=alle laden) "
-        read -r skip
-        echo "Überspringe $skip Episode(n)."
-    else
-        skip=0
-    fi
-    skip=$((skip + 1))
-
-    # loop over all episodes and download each
-    while read episode
-    do
-        episodeId=$(echo "$episode" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
-        episodeUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$episodeId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
-
-        episodeDetailsStatus=$("$curlBin" -s -o current-tatort-episode.txt -w "%{http_code}" "${episodeUrl}" \
-            -H 'authority: data.ardplus.de' \
-            -H 'content-type: application/json' \
-            -H "cookie: sid=$token" \
-            -H 'origin: https://www.ardplus.de' \
-            -H 'referer: https://www.ardplus.de/' \
-            -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-
-        if [[ $episodeDetailsStatus != "200" ]]; then
-            #retry once
-            echo "Couldn't get episode details. Trying again!"
-            sleep 2
-            episodeDetailsStatus=$("$curlBin" -s -o current-tatort-episode.txt -w "%{http_code}" $episodeUrl \
-            -H 'authority: data.ardplus.de' \
-            -H 'content-type: application/json' \
-            -H "cookie: sid=$token" \
-            -H 'origin: https://www.ardplus.de' \
-            -H 'referer: https://www.ardplus.de/' \
-            -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-            --compressed)
-            episodeDetails=$(cat current-tatort-episode.txt)
+        if download_url "$normalized_link" "$skip"; then
+            record_success "$normalized_link"
         else
-            episodeDetails=$(cat current-tatort-episode.txt)
+            if [[ -z "$DOWNLOAD_FAIL_REASON" ]]; then
+                DOWNLOAD_FAIL_REASON="unknown error"
+            fi
+            record_failure "$normalized_link" "$DOWNLOAD_FAIL_REASON"
         fi
+        log_msg ""
+    done < "$links_file"
 
-        movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
-        name=$(echo "$episodeDetails" | jq -r '.data.movie.title')
-        videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
-        year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear')
-        customData=$(echo "$episodeDetails" | jq -r '.data.movie.customData')
-        episode=$(echo "$customData" | jq -r '.episodeProductionNumber')
-        team=$(echo "$customData" | jq -r '.team')
-        city=$(echo "$customData" | jq -r '.location')
-        filename="Tatort ${city}"
-        if [[ -n "$team" ]];
-        then
-            filename="$filename (${team})"
-        fi
-        if [[ "$episode" != null ]];
-        then
-            filename="$filename - Folge ${episode}"
-        fi
-        filename="$filename - ${name} (${year})"
-        urlParam=$( auth )
-        downloadUrl=${videoUrl}?${urlParam}
-        echo "Lade ${filename}..."
-        yt-dlp --quiet --progress --no-warnings --audio-multistreams -f "bv+mergeall[vcodec=none]" --sub-langs "en.*,de.*" --embed-subs --merge-output-format mp4 ${downloadUrl} -o "$filename"
+    log_msg "Batch download finished."
+    log_msg "Logs directory: ${logs_dir}"
+    log_msg "Successful links: ${SUCCESS_FILE}"
+    log_msg "Failed links: ${FAILED_FILE}"
+else
+    if download_url "$ardPlusUrl" "$skip"; then
         cleanup
-        sleep 1
-    done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$skip )
-else 
-    echo "invalid content"
+    else
+        cleanup
+        exit 1
+    fi
 fi
-cleanup
+
+rm -f $content_result

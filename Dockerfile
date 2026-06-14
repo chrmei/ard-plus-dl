@@ -7,8 +7,7 @@ WORKDIR /app
 # Copy ard-plus-dl script
 COPY ard-plus-dl.sh .
 
-# Replace yt-dlp output path in script
-RUN sed -i -e 's/"$filename"/\/data\/"$filename"/g' /app/ard-plus-dl.sh
+ENV DOWNLOADS_DIR=/data/downloads
 
 # Add a script-based download alias
 RUN ln -s /app/ard-plus-dl.sh /usr/bin/download && \

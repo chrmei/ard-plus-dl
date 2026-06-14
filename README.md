@@ -1,66 +1,152 @@
 # ard-plus-dl
-Ein kleines Skript bzw. Tool zum herunterladen von Videos bei [ARD Plus](https://www.ardplus.de/).
-![Bildschirmfoto 2023-12-29 um 17 25 27](https://user-images.githubusercontent.com/9810829/293396091-2b2a6fc9-91ab-43f6-81c4-670bcd4762f1.png)
-## Anforderungen
-- Shell/Bash (z.B. macOS Terminal)
+
+Kleines Bash-Skript zum Herunterladen von Videos von [ARD Plus](https://www.ardplus.de/) — Filme, Serien und Tatort-Sammlungen.
+
+![Screenshot](https://user-images.githubusercontent.com/9810829/293396091-2b2a6fc9-91ab-43f6-81c4-670bcd4762f1.png)
+
+## Features
+
+- Automatische Erkennung von Filmen, Serien und Tatort-Kategorien
+- Mehrere Tonspuren (z. B. Deutsch & Englisch) und eingebettete Untertitel, sofern verfügbar
+- Interaktive Staffelauswahl oder vollautomatischer Download aller Staffeln
+- Batch-Download mehrerer URLs aus einer Link-Datei
+- Überspringen bereits vorhandener Dateien (Standard; mit `--force-redownload` deaktivierbar)
+- Fortsetzen unterbrochener Downloads (einzelne URL mit `skip`-Parameter)
+
+## Voraussetzungen
+
+- Bash (z. B. macOS Terminal oder Linux)
 - [jq](https://jqlang.github.io/jq/)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- Gnu-Tools: curl, grep, awk, echo, cut, sed, base64, tr
-- ARD Plus [Mitgliedschaft](https://www.ardplus.de/) (14 Tage kostenlos)
+- GNU-Tools: `curl`, `grep`, `awk`, `cut`, `sed`, `base64`, `tr`
+- Aktive ARD-Plus-[Mitgliedschaft](https://www.ardplus.de/)
 
-## Benutzung
-Skript [downloaden](https://raw.githubusercontent.com/marco79cgn/ard-plus-dl/refs/heads/main/ard-plus-dl.sh) und ausführbar machen: 
-`chmod 755 ard-plus-dl.sh`
+## Installation
 
-Anschließend das Skript aufrufen und drei Parameter mitgeben:
-`./ard-plus-dl.sh <url> <username> <password>` 
+Skript herunterladen und ausführbar machen:
 
+```bash
+curl -O https://raw.githubusercontent.com/marco79cgn/ard-plus-dl/refs/heads/main/ard-plus-dl.sh
+chmod 755 ard-plus-dl.sh
+```
 
-- Gegen den Wind (Serie):
-`https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind`
-- Lola rennt (Film): 
-`https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt`
+Alternativ per Git:
 
-Das Skript erkennt automatisch, ob es sich um einen Film oder eine Serie handelt. Filme werden unmittelbar geladen. Im Falle einer Serie werden alle gefundenen Staffeln aufgelistet und zur Auswahl angeboten. 
+```bash
+git clone https://github.com/marco79cgn/ard-plus-dl.git
+cd ard-plus-dl
+chmod 755 ard-plus-dl.sh
+```
 
-Vor den drei Parametern kann optional noch "--automatic" angegeben werden: Falls dieses Flag übergeben wird, erfolgt der Download automatisch ohne Rückfrage; bei Serien werden dann automatisch alle Staffeln heruntergeladen. Falls der Download abbrechen oder z.B. eine Staffel nicht geladen werden sollte, kann das Skript einfach erneut gestartet werden; es werden nur die fehlenden Episoden heruntergeladen.
+## Verwendung
 
-Die `<url>` ist die Übersichtsseite eines Films oder einer Serie bei ARD Plus, zum Beispiel 
-Filme und Serien werden automatisch mit mehreren Tonspuren geladen (z.B. deutsch & englisch), sofern verfügbar. Auch die Untertitel werden berücksichtigt.
+### Einzelne URL
 
-Es können zusätzlich zu Filmen und Serien auch ganze Tatort Ausgaben pro Stadt geladen werden, z.B. alle Folgen aus Bremen mit der URL:
-`https://www.ardplus.de/kategorie/tatort-bremen`
+```bash
+./ard-plus-dl.sh <url> <username> <password> [skip]
+```
 
-Die Zieldateien werden sinnvoll benannt, z.B.: 
-`S01E01 - Schönes Wochenende.mp4`
-oder 
-`Lola rennt (1998).mp4`
+| Parameter   | Beschreibung |
+|-------------|--------------|
+| `url`       | Übersichtsseite eines Films, einer Serie oder einer Tatort-Kategorie auf ARD Plus |
+| `username`  | ARD-Plus-Benutzername |
+| `password`  | ARD-Plus-Passwort |
+| `skip`      | Optional. Anzahl bereits geladener Episoden zum Überspringen (Standard: `1` = keine überspringen) |
+
+**Beispiele:**
+
+```bash
+# Serie — Staffeln werden interaktiv zur Auswahl angeboten
+./ard-plus-dl.sh 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind' user pass
+
+# Film — wird sofort geladen
+./ard-plus-dl.sh 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt' user pass
+
+# Tatort — alle Folgen einer Stadt
+./ard-plus-dl.sh 'https://www.ardplus.de/kategorie/tatort-bremen' user pass
+```
+
+### Automatischer Modus (`--automatic`)
+
+Ohne Rückfragen alle Staffeln bzw. Episoden laden:
+
+```bash
+./ard-plus-dl.sh --automatic <url> <username> <password> [skip]
+```
+
+Bei Serien werden automatisch alle Staffeln und alle Episoden heruntergeladen. Bricht der Download ab, kann das Skript erneut gestartet werden — vorhandene `.mp4`-Dateien werden standardmäßig erkannt und übersprungen (im Log als `SKIP (already exists)`). Alternativ kann der `skip`-Parameter genutzt werden, um die ersten N Episoden zu überspringen. Mit `--force-redownload` werden auch vorhandene Dateien erneut geladen.
+
+### Batch-Download (`--links-file`)
+
+Mehrere Titel nacheinander aus einer Textdatei laden. Pro Zeile eine ARD-Plus-URL; Zeilen, die mit `#` beginnen, und Leerzeilen werden ignoriert.
+
+```bash
+./ard-plus-dl.sh --links-file links.txt <username> <password>
+```
+
+Eine Beispieldatei liegt als [`links.txt.example`](links.txt.example) im Repository:
+
+```text
+# Ein Film
+https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt
+
+# Eine Serie — alle Staffeln und Episoden werden geladen
+https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind
+```
+
+`--links-file` schaltet automatisch den `--automatic`-Modus ein. Pro URL reicht die Übersichtsseite — separate Zeilen pro Staffel sind nicht nötig.
+
+**Protokolldateien** (im Unterverzeichnis `logs/` neben `links.txt`):
+
+| Datei | Inhalt |
+|-------|--------|
+| `logs/successful_links_<timestamp>.txt` | Erfolgreich geladene URLs |
+| `logs/failed_links_<timestamp>.txt` | Fehlgeschlagene URLs mit Fehlergrund (Tab-getrennt) |
+| `logs/download_log_<timestamp>.txt` | Vollständiges Ausführungsprotokoll |
+
+Das Skript gibt beim Start und Ende den Pfad zum `logs/`-Verzeichnis aus. Protokolldateien dienen nur der Dokumentation — beim erneuten Start wird jede URL in `links.txt` erneut geprüft. Vorhandene vollständige `.mp4`-Dateien werden übersprungen (`SKIP (already exists)` im Log), fehlende oder unvollständige Episoden werden nachgeladen.
+
+## Unterstützte Inhalte
+
+| Typ | URL-Beispiel | Verhalten |
+|-----|--------------|-----------|
+| **Film** | `…/details/a0S01000000EWYi-lola-rennt` | Einzeldatei |
+| **Serie** | `…/details/a0T0100000064DB-gegen-den-wind` | Alle Staffeln und Episoden (interaktiv oder mit `--automatic`) |
+| **Tatort** | `…/kategorie/tatort-bremen` | Alle Episoden der jeweiligen Stadt |
+
+## Ausgabe
+
+Dateien werden im Verzeichnis `downloads/` (neben `links.txt` bzw. im aktuellen Arbeitsverzeichnis) in sinnvolle Ordnerstrukturen sortiert und benannt, z. B.:
+
+```text
+downloads/Gegen den Wind/Season 01/Gegen den Wind S01E01 - Schönes Wochenende.mp4
+downloads/Lola rennt (1998)/Lola rennt.mp4
+```
+
+Über die Umgebungsvariable `DOWNLOADS_DIR` kann ein anderer Zielpfad gesetzt werden (im Docker-Image standardmäßig `/data/downloads`).
 
 ## Docker
-Ein fertiges Docker Image kann über das vorhandene Dockerfile gebaut und benutzt werden. 
 
-1. Checkout: 
-```
+Image lokal bauen und ausführen:
+
+```bash
 git clone https://github.com/marco79cgn/ard-plus-dl.git
-```
-2. Build Docker image: 
-```
+cd ard-plus-dl
 docker build -t ard-plus-dl .
-```
-3. Download content: 
-```
-docker run --rm -it -v $(pwd)/:/data ard-plus-dl download 'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber' "username" "password"
-```
-Dabei wird das aktuelle Host Verzeichnis `$(pwd)` genutzt, aus dem der Befehl ausgeführt wird. Dort landen auch die Downloads. Wichtig: Unter Windows gibt es keinen `$(pwd)` Befehl. Hier muss das lokale Verzeichnis mit Backslashes gemountet werden, z.B.
-```
-docker run --rm -it -v C:\Users\marco\movies:/data ard-plus-dl download 'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber' "username" "password"
+docker run --rm -it -v "$(pwd)/:/data" ard-plus-dl download \
+  'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber' "username" "password"
 ```
 
-**Optional:**
+Unter Windows das lokale Verzeichnis mit Backslashes mounten:
 
-Statt selbst ein Docker image zu bauen kann auch das existierende aus diesem Github Repository benutzt werden: `ghcr.io/marco79cgn/ard-plus-dl`. 
+```bash
+docker run --rm -it -v C:\Users\marco\movies:/data ard-plus-dl download '<url>' "username" "password"
+```
 
-In diesem Fall muss nichts selbst installiert oder gebaut werden. Es reicht dieser Befehl: 
+Alternativ das vorgefertigte Image von GitHub Container Registry nutzen — ohne lokale Installation:
+
+```bash
+docker run --rm -it -v "$(pwd)/:/data" ghcr.io/marco79cgn/ard-plus-dl download '<url>' "username" "password"
 ```
-docker run --rm -it -v $(pwd)/:/data ghcr.io/marco79cgn/ard-plus-dl download '<url>' "username" "password"
-```
+
+Downloads landen im gemounteten Host-Verzeichnis (`/data` im Container).
