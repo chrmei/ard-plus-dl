@@ -1,4 +1,15 @@
 #!/bin/bash
+script_path="${BASH_SOURCE[0]}"
+if [[ -L "$script_path" ]]; then
+    script_path="$(readlink "$script_path")"
+fi
+if [[ "$script_path" != /* ]]; then
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "$script_path")"
+fi
+script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+# shellcheck source=graphql-queries.sh
+source "${script_dir}/graphql-queries.sh"
+
 curlBin=$(which curl)
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
@@ -104,40 +115,44 @@ debug_log() {
 }
 # #endregion
 
-graphql_needs_retry() {
+graphql_response_ok() {
     local outfile="$1"
-    local response error_msg
-    [[ -f "$outfile" ]] || return 0
-    response=$(cat "$outfile")
-    error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
-    if [[ "$error_msg" == "PersistedQueryNotFound" ]]; then
-        return 0
-    fi
-    if echo "$response" | jq -e '.data | values | length > 0' >/dev/null 2>&1; then
-        return 1
-    fi
-    return 0
+    local error_msg
+    [[ -f "$outfile" ]] || return 1
+    error_msg=$(jq -r '.errors[0].message // empty' "$outfile" 2>/dev/null)
+    [[ -n "$error_msg" ]] && return 1
+    jq -e '.data | values | length > 0' "$outfile" >/dev/null 2>&1
 }
 
 fetch_graphql() {
-    local url="$1"
-    local outfile="$2"
-    local max_retries=8
+    local operation_name="$1"
+    local query="$2"
+    local variables_json="$3"
+    local outfile="$4"
+    local max_retries=5
     local attempt=1
-    local status error_msg
+    local status error_msg payload
+
+    payload=$(jq -nc \
+        --arg query "$query" \
+        --argjson variables "$variables_json" \
+        --arg operationName "$operation_name" \
+        '{query: $query, variables: $variables, operationName: $operationName}')
 
     while [[ $attempt -le $max_retries ]]; do
-        status=$("$curlBin" -s -o "$outfile" -w "%{http_code}" "$url" \
+        status=$("$curlBin" -s -o "$outfile" -w "%{http_code}" \
+            -X POST 'https://data.ardplus.de/ard/graphql' \
             -H 'authority: data.ardplus.de' \
             -H 'content-type: application/json' \
             -H "cookie: sid=$token" \
             -H 'origin: https://www.ardplus.de' \
             -H 'referer: https://www.ardplus.de/' \
-            -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
+            -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
+            --data-raw "$payload")
 
-        if [[ "$status" == "200" ]] && ! graphql_needs_retry "$outfile"; then
+        if [[ "$status" == "200" ]] && graphql_response_ok "$outfile"; then
             # #region agent log
-            debug_log "B" "ard-plus-dl.sh:fetch_graphql" "graphql fetch succeeded" "{\"attempt\":${attempt},\"httpStatus\":${status}}"
+            debug_log "B" "ard-plus-dl.sh:fetch_graphql" "graphql fetch succeeded" "{\"attempt\":${attempt},\"httpStatus\":${status},\"operation\":\"${operation_name}\"}"
             # #endregion
             echo "$status"
             return 0
@@ -145,7 +160,7 @@ fetch_graphql() {
 
         error_msg=$(jq -r '.errors[0].message // empty' "$outfile" 2>/dev/null)
         # #region agent log
-        debug_log "B" "ard-plus-dl.sh:fetch_graphql:retry" "graphql fetch retry" "{\"attempt\":${attempt},\"httpStatus\":${status},\"error\":\"${error_msg}\"}"
+        debug_log "B" "ard-plus-dl.sh:fetch_graphql:retry" "graphql fetch retry" "{\"attempt\":${attempt},\"httpStatus\":${status},\"operation\":\"${operation_name}\",\"error\":\"${error_msg}\"}"
         # #endregion
         log_msg "GraphQL request failed (attempt ${attempt}/${max_retries}, HTTP ${status}, error: ${error_msg:-empty data}), retrying..." >&2
 
@@ -337,7 +352,7 @@ ensure_token() {
 download_url() {
     local ardPlusUrl="$1"
     local episode_skip="$2"
-    local showPath showId contentUrl seasonsStatus contentResult movie tvshow
+    local showPath showId content_variables seasonsStatus contentResult movie tvshow
 
     DOWNLOAD_FAIL_REASON=''
     showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
@@ -347,8 +362,10 @@ download_url() {
     debug_log "A" "ard-plus-dl.sh:download_url:entry" "download_url started" "{\"url\":\"${ardPlusUrl}\",\"showPath\":\"${showPath}\",\"showId\":\"${showId}\",\"tokenLen\":${#token},\"tokenFileExists\":$([ -f \"$FILE\" ] && echo true || echo false)}"
     # #endregion
 
-    contentUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$showId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
-    if ! seasonsStatus=$(fetch_graphql "${contentUrl}" "$content_result"); then
+    content_variables=$(jq -nc \
+        --arg movieId "$showId" \
+        '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
+    if ! seasonsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$content_variables" "$content_result"); then
         local metadata_error
         metadata_error=$(jq -r '.errors[0].message // empty' "$content_result" 2>/dev/null)
         if [[ -n "$metadata_error" ]]; then
@@ -420,9 +437,10 @@ download_url() {
             local selectedSeasonId seasonData episodes amount selectedSeasonFormatted episode_line
             selectedSeasonId=$(echo "$seasonIds" | jq -r ".[$((selectedSeason - 1))].seasonId")
 
-            local season_result episode_status
+            local season_result episode_status season_variables
             season_result=$(mktemp)
-            if ! episode_status=$(fetch_graphql "https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22134d75e1e68a9599d1cdccf790839d9d71d2e7d7dca57d96f95285fcfd02b2ae%22%7D%7D&variables=%7B%22seasonId%22%3A%22$selectedSeasonId%22%7D&operationName=EpisodesInSeasonData" "$season_result"); then
+            season_variables=$(jq -nc --arg seasonId "$selectedSeasonId" '{seasonId: $seasonId}')
+            if ! episode_status=$(fetch_graphql "EpisodesInSeasonData" "$GRAPHQL_EPISODES_IN_SEASON" "$season_variables" "$season_result"); then
                 local episode_error
                 episode_error=$(jq -r '.errors[0].message // empty' "$season_result" 2>/dev/null)
                 rm -f "$season_result"
@@ -508,11 +526,13 @@ download_url() {
 
         while read episode_line
         do
-            local episodeId episodeUrl episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl
+            local episodeId episode_variables episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl
             episodeId=$(echo "$episode_line" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
-            episodeUrl="https://data.ardplus.de/ard/graphql?extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%2240d7cbfb79e6675c80aae2d44da2a7f74e4a4ee913b5c31b37cf9522fa64d63b%22%7D%7D&variables=%7B%22movieId%22%3A%22$episodeId%22%2C%22externalId%22%3A%22%22%2C%22slug%22%3A%22%22%2C%22potentialMovieId%22%3A%22%22%7D"
+            episode_variables=$(jq -nc \
+                --arg movieId "$episodeId" \
+                '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
 
-            if ! episodeDetailsStatus=$(fetch_graphql "${episodeUrl}" "current-tatort-episode.txt"); then
+            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "current-tatort-episode.txt"); then
                 local tatort_error
                 tatort_error=$(jq -r '.errors[0].message // empty' "current-tatort-episode.txt" 2>/dev/null)
                 if [[ -n "$tatort_error" ]]; then
@@ -563,9 +583,7 @@ download_url() {
         # #region agent log
         debug_log "C" "ard-plus-dl.sh:download_url:invalid" "fell through to invalid content branch" "{\"showId\":\"${showId}\",\"httpStatus\":${seasonsStatus},\"errors\":${graphql_errors},\"movieIsNull\":${movie_is_null},\"tvshowIsNull\":${tvshow_is_null}}"
         # #endregion
-        if [[ "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" == "PersistedQueryNotFound" ]]; then
-            DOWNLOAD_FAIL_REASON="graphql API error: PersistedQueryNotFound (retries exhausted)"
-        elif [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
+        if [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
             DOWNLOAD_FAIL_REASON="graphql API error: $(echo "$contentResult" | jq -r '.errors[0].message')"
         else
             DOWNLOAD_FAIL_REASON="invalid content (no movie or series in API response)"
