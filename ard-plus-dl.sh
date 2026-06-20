@@ -105,16 +105,6 @@ log_msg() {
     fi
 }
 
-# #region agent log
-DEBUG_LOG="/Users/cmeister/Repos/ard-plus-dl/.cursor/debug-253e98.log"
-debug_log() {
-    local hypothesis_id="$1" location="$2" message="$3" data_json="$4"
-    mkdir -p "$(dirname "$DEBUG_LOG")"
-    printf '{"sessionId":"253e98","hypothesisId":"%s","location":"%s","message":"%s","data":%s,"timestamp":%s}\n' \
-        "$hypothesis_id" "$location" "$message" "$data_json" "$(date +%s000)" >> "$DEBUG_LOG"
-}
-# #endregion
-
 graphql_response_ok() {
     local outfile="$1"
     local error_msg
@@ -151,17 +141,11 @@ fetch_graphql() {
             --data-raw "$payload")
 
         if [[ "$status" == "200" ]] && graphql_response_ok "$outfile"; then
-            # #region agent log
-            debug_log "B" "ard-plus-dl.sh:fetch_graphql" "graphql fetch succeeded" "{\"attempt\":${attempt},\"httpStatus\":${status},\"operation\":\"${operation_name}\"}"
-            # #endregion
             echo "$status"
             return 0
         fi
 
         error_msg=$(jq -r '.errors[0].message // empty' "$outfile" 2>/dev/null)
-        # #region agent log
-        debug_log "B" "ard-plus-dl.sh:fetch_graphql:retry" "graphql fetch retry" "{\"attempt\":${attempt},\"httpStatus\":${status},\"operation\":\"${operation_name}\",\"error\":\"${error_msg}\"}"
-        # #endregion
         log_msg "GraphQL request failed (attempt ${attempt}/${max_retries}, HTTP ${status}, error: ${error_msg:-empty data}), retrying..." >&2
 
         if [[ $attempt -lt $max_retries ]]; then
@@ -358,10 +342,6 @@ download_url() {
     showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
     showId=$(echo "$showPath" | cut -d "-" -f1)
 
-    # #region agent log
-    debug_log "A" "ard-plus-dl.sh:download_url:entry" "download_url started" "{\"url\":\"${ardPlusUrl}\",\"showPath\":\"${showPath}\",\"showId\":\"${showId}\",\"tokenLen\":${#token},\"tokenFileExists\":$([ -f \"$FILE\" ] && echo true || echo false)}"
-    # #endregion
-
     content_variables=$(jq -nc \
         --arg movieId "$showId" \
         '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
@@ -379,16 +359,6 @@ download_url() {
     contentResult=$(cat $content_result)
     movie=$(echo "$contentResult" | jq '.data.movie')
     tvshow=$(echo "$contentResult" | jq '.data.series')
-
-    # #region agent log
-    local graphql_errors response_preview movie_is_null tvshow_is_null series_title
-    graphql_errors=$(echo "$contentResult" | jq -c '.errors // null' 2>/dev/null || echo '"jq_errors_parse_failed"')
-    response_preview=$(echo "$contentResult" | head -c 300 | jq -Rs '.' 2>/dev/null || echo '"preview_unavailable"')
-    movie_is_null=$([[ "$movie" == null ]] && echo true || echo false)
-    tvshow_is_null=$([[ "$tvshow" == null ]] && echo true || echo false)
-    series_title=$(echo "$contentResult" | jq -r '.data.series.title // empty' 2>/dev/null)
-    debug_log "B" "ard-plus-dl.sh:download_url:graphql" "graphql response parsed" "{\"httpStatus\":${seasonsStatus},\"errors\":${graphql_errors},\"responsePreview\":${response_preview},\"movieIsNull\":${movie_is_null},\"tvshowIsNull\":${tvshow_is_null},\"seriesTitle\":\"${series_title}\",\"contentResultBytes\":${#contentResult}}"
-    # #endregion
 
     if [[ "$movie" != null ]]; then
         movieId=$(echo "$movie" | jq -r '.id')
@@ -580,9 +550,6 @@ download_url() {
         done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$episode_skip )
         return 0
     else
-        # #region agent log
-        debug_log "C" "ard-plus-dl.sh:download_url:invalid" "fell through to invalid content branch" "{\"showId\":\"${showId}\",\"httpStatus\":${seasonsStatus},\"errors\":${graphql_errors},\"movieIsNull\":${movie_is_null},\"tvshowIsNull\":${tvshow_is_null}}"
-        # #endregion
         if [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
             DOWNLOAD_FAIL_REASON="graphql API error: $(echo "$contentResult" | jq -r '.errors[0].message')"
         else

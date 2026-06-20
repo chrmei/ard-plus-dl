@@ -1,15 +1,17 @@
 # ard-plus-dl
 
-Bash-Skript zum Herunterladen von Videos von [ARD Plus](https://www.ardplus.de/) — Filme, Serien und Tatort-Sammlungen.
+Hilfswerkzeug für [ARD-Plus-Abonnenten](https://www.ardplus.de/) zur lokalen Archivierung von Filmen, Serien und Tatort-Sammlungen - nur im Rahmen eines gültigen Abos und des geltenden Rechts.
 
-Fork von [marco79cgn/ard-plus-dl](https://github.com/marco79cgn/ard-plus-dl) mit Batch-Downloads, GraphQL-Integration und verbesserter Fehlerbehandlung.
+Fork von [marco79cgn/ard-plus-dl](https://github.com/marco79cgn/ard-plus-dl) mit Batch-Verarbeitung, GraphQL-Integration und verbesserter Fehlerbehandlung.
+
+> **Rechtlicher Hinweis:** Nur für die eigene, private Nutzung mit gültigem ARD-Plus-Abo. Keine Weitergabe heruntergeladener Inhalte. Details: [LEGAL.md](LEGAL.md)
 
 ## Features
 
 - Filme, Serien und Tatort-Kategorien werden automatisch erkannt
 - Mehrere Tonspuren und Untertitel, sofern verfügbar
-- Interaktive Staffelauswahl oder `--automatic` für alles auf einmal
-- Batch-Download aus einer Link-Datei (`--links-file`)
+- Interaktive Staffelauswahl oder `--automatic` für unbeaufsichtigte Abläufe
+- Mehrere URLs aus einer Link-Datei (`--links-file`) - z. B. zum Fortsetzen unterbrochener Jobs
 - Vorhandene Dateien werden übersprungen (`--force-redownload` zum Überschreiben)
 
 ## Voraussetzungen
@@ -39,11 +41,11 @@ chmod 755 ard-plus-dl.sh
 
 | Option / Parameter | Beschreibung |
 |--------------------|--------------|
-| `--automatic` | Alle Staffeln/Episoden ohne Rückfrage laden |
+| `--automatic` | Alle Staffeln/Episoden ohne Rückfrage verarbeiten |
 | `--links-file <datei>` | Mehrere URLs aus Datei (aktiviert `--automatic`) |
 | `--force-redownload` | Vorhandene `.mp4`-Dateien erneut laden |
 | `url` | ARD-Plus-Übersichtsseite (Film, Serie oder Tatort-Kategorie) |
-| `username`, `password` | ARD-Plus-Zugangsdaten |
+| `username`, `password` | Eigene ARD-Plus-Zugangsdaten |
 | `skip` | Optional: erste N Episoden überspringen (Standard: `1`) |
 
 **Beispiele:**
@@ -54,14 +56,14 @@ chmod 755 ard-plus-dl.sh
 ./ard-plus-dl.sh 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt' user pass
 ./ard-plus-dl.sh 'https://www.ardplus.de/kategorie/tatort-bremen' user pass
 
-# Alles automatisch
+# Unbeaufsichtigt (eigene Inhalte, gültiges Abo vorausgesetzt)
 ./ard-plus-dl.sh --automatic 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind' user pass
 
-# Batch — eine URL pro Zeile, `#`-Kommentare erlaubt (siehe links.txt.example)
+# Mehrere URLs - eine pro Zeile, `#`-Kommentare erlaubt (siehe links.txt.example)
 ./ard-plus-dl.sh --links-file links.txt user pass
 ```
 
-Unterbrochene Downloads einfach erneut starten — vorhandene Dateien werden übersprungen (`SKIP (already exists)` im Log). Bei `--links-file` entstehen Protokolle in `logs/` (`download_log_*`, `successful_links_*`, `failed_links_*`).
+Unterbrochene Downloads einfach erneut starten - vorhandene Dateien werden übersprungen (`SKIP (already exists)` im Log). Bei `--links-file` entstehen Protokolle in `logs/` (`download_log_*`, `successful_links_*`, `failed_links_*`).
 
 ## Unterstützte URLs
 
@@ -80,7 +82,9 @@ downloads/Gegen den Wind/Season 01/Gegen den Wind S01E01 - Schönes Wochenende.m
 downloads/Lola rennt (1998)/Lola rennt.mp4
 ```
 
-## Docker
+## Docker (lokal bauen)
+
+Es wird kein vorgefertigtes Container-Image veröffentlicht. Image lokal bauen und ausführen:
 
 ```bash
 git clone https://github.com/chrmei/ard-plus-dl.git
@@ -91,3 +95,7 @@ docker run --rm -it -v "$(pwd)/:/data" ard-plus-dl download \
 ```
 
 Windows: Host-Pfad mit Backslashes mounten, z. B. `-v C:\Users\Du\Videos:/data`.
+
+## Lizenz & Attribution
+
+Basiert auf [marco79cgn/ard-plus-dl](https://github.com/marco79cgn/ard-plus-dl), lizenziert unter [Unlicense](LICENSE). Erweiterungen in diesem Fork unter derselben Lizenz.
