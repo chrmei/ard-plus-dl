@@ -3,3 +3,4 @@ links.txt
 .cursor/
 **/*ard-plus-token
 logs/
+**/*.DS_Store

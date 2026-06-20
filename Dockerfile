@@ -5,7 +5,7 @@ RUN apk add --no-cache bash && apk add --no-cache curl && apk add --no-cache yt-
 WORKDIR /app
 
 # Copy ard-plus-dl script and GraphQL queries
-COPY ard-plus-dl.sh graphql-queries.sh .
+COPY ard-plus-dl.sh graphql-queries.sh ./
 
 ENV DOWNLOADS_DIR=/data/downloads
 
