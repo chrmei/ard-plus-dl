@@ -28,6 +28,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --links-file)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo "Error: --links-file requires a file argument" >&2
+                exit 1
+            fi
             batch_mode=1
             links_file=$2
             shift 2
