@@ -388,10 +388,9 @@ download_url() {
         cleanup
         return 0
     elif [[ "$tvshow" != null ]]; then
-        local requestedShow seasonIds seasonCount seasonOutput selectedSeasonList selectedSeason
+        local requestedShow seasonIds seasonOutput selectedSeasonList selectedSeason
         requestedShow=$(echo "$contentResult" | jq -r '.data.series.title')
         seasonIds=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonInSeries, seasonId: .id, title: .title }]')
-        seasonCount=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonId }] | length')
         seasonOutput=$(echo "$seasonIds" | jq '[.[] | { Option: .season, Titel: .title }]' | jq -r '(.[0]|keys_unsorted|(.,map(length*"-"))),.[]|map(.)|@tsv'|column -ts $'\t')
         log_msg ""
         log_msg "Gewünschte Serie: $requestedShow"
@@ -403,13 +402,17 @@ download_url() {
             echo -n "Welche Staffel möchtest du runterladen? "
             read -r selectedSeasonList
         else
-            selectedSeasonList=$(seq 1 $seasonCount)
+            selectedSeasonList=$(echo "$seasonIds" | jq -r '.[].season')
         fi
 
         for selectedSeason in $selectedSeasonList
         do
             local selectedSeasonId seasonData episodes amount selectedSeasonFormatted episode_line
-            selectedSeasonId=$(echo "$seasonIds" | jq -r ".[$((selectedSeason - 1))].seasonId")
+            selectedSeasonId=$(echo "$seasonIds" | jq -r --argjson s "$selectedSeason" '.[] | select(.season == $s) | .seasonId')
+            if [[ -z "$selectedSeasonId" || "$selectedSeasonId" == "null" ]]; then
+                DOWNLOAD_FAIL_REASON="season ${selectedSeason} not found"
+                return 1
+            fi
 
             local season_result episode_status season_variables
             season_result=$(mktemp)
