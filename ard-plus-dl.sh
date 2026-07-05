@@ -20,88 +20,6 @@ links_file=''
 DOWNLOAD_FAIL_REASON=''
 skip_existing_files=1
 
-# parse input parameters
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --automatic)
-            automatic_download=1
-            shift
-            ;;
-        --links-file)
-            if [[ -z "$2" || "$2" == -* ]]; then
-                echo "Error: --links-file requires a file argument" >&2
-                exit 1
-            fi
-            batch_mode=1
-            links_file=$2
-            shift 2
-            ;;
-        --force-redownload)
-            skip_existing_files=0
-            shift
-            ;;
-        *)
-            break
-            ;;
-    esac
-done
-
-if [[ $batch_mode -eq 1 ]]; then
-    username=$1
-    password=$2
-    skip=$3
-else
-    ardPlusUrl=$1
-    username=$2
-    password=$3
-    skip=$4
-fi
-movieId=''
-token=''
-
-if [[ -z "$username" || -z "$password" ]]; then
-    echo "Credentials missing! Please start the script with:"
-    echo "  ./ard-plus-dl.sh [--automatic] [--links-file <file>] <ard-plus-url> <username> <password>"
-    echo "  ./ard-plus-dl.sh [--automatic] --links-file <file> <username> <password>"
-    exit 1
-fi
-
-if [[ $batch_mode -eq 1 ]]; then
-    if [[ -z "$links_file" || ! -f "$links_file" ]]; then
-        echo "Links file missing or not found: $links_file"
-        exit 1
-    fi
-    automatic_download=1
-    links_dir=$(cd "$(dirname "$links_file")" && pwd)
-    links_file="$links_dir/$(basename "$links_file")"
-elif [[ -z "$ardPlusUrl" ]]; then
-    echo "URL or --links-file required."
-    exit 1
-fi
-
-if [[ -z "$skip" ]]; then
-    skip=1
-fi
-
-work_dir=$(pwd)
-if [[ $batch_mode -eq 1 ]]; then
-    work_dir="$links_dir"
-fi
-downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
-mkdir -p "$downloads_dir"
-
-content_result=$(mktemp)
-RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
-
-if [[ $batch_mode -eq 1 ]]; then
-    logs_dir="$links_dir/logs"
-    mkdir -p "$logs_dir"
-    SUCCESS_FILE="$logs_dir/successful_links_${RUN_TS}.txt"
-    FAILED_FILE="$logs_dir/failed_links_${RUN_TS}.txt"
-    LOG_FILE="$logs_dir/download_log_${RUN_TS}.txt"
-    touch "$SUCCESS_FILE" "$FAILED_FILE" "$LOG_FILE"
-fi
-
 log_msg() {
     echo "$1"
     if [[ $batch_mode -eq 1 ]]; then
@@ -577,6 +495,89 @@ term() {
     rm -f $content_result
     exit 0
 }
+
+main() {
+# parse input parameters
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --automatic)
+            automatic_download=1
+            shift
+            ;;
+        --links-file)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo "Error: --links-file requires a file argument" >&2
+                exit 1
+            fi
+            batch_mode=1
+            links_file=$2
+            shift 2
+            ;;
+        --force-redownload)
+            skip_existing_files=0
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $batch_mode -eq 1 ]]; then
+    username=$1
+    password=$2
+    skip=$3
+else
+    ardPlusUrl=$1
+    username=$2
+    password=$3
+    skip=$4
+fi
+movieId=''
+token=''
+
+if [[ -z "$username" || -z "$password" ]]; then
+    echo "Credentials missing! Please start the script with:"
+    echo "  ./ard-plus-dl.sh [--automatic] [--links-file <file>] <ard-plus-url> <username> <password>"
+    echo "  ./ard-plus-dl.sh [--automatic] --links-file <file> <username> <password>"
+    exit 1
+fi
+
+if [[ $batch_mode -eq 1 ]]; then
+    if [[ -z "$links_file" || ! -f "$links_file" ]]; then
+        echo "Links file missing or not found: $links_file"
+        exit 1
+    fi
+    automatic_download=1
+    links_dir=$(cd "$(dirname "$links_file")" && pwd)
+    links_file="$links_dir/$(basename "$links_file")"
+elif [[ -z "$ardPlusUrl" ]]; then
+    echo "URL or --links-file required."
+    exit 1
+fi
+
+if [[ -z "$skip" ]]; then
+    skip=1
+fi
+
+work_dir=$(pwd)
+if [[ $batch_mode -eq 1 ]]; then
+    work_dir="$links_dir"
+fi
+downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
+mkdir -p "$downloads_dir"
+
+content_result=$(mktemp)
+RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
+
+if [[ $batch_mode -eq 1 ]]; then
+    logs_dir="$links_dir/logs"
+    mkdir -p "$logs_dir"
+    SUCCESS_FILE="$logs_dir/successful_links_${RUN_TS}.txt"
+    FAILED_FILE="$logs_dir/failed_links_${RUN_TS}.txt"
+    LOG_FILE="$logs_dir/download_log_${RUN_TS}.txt"
+    touch "$SUCCESS_FILE" "$FAILED_FILE" "$LOG_FILE"
+fi
 trap term SIGINT
 
 ensure_token
@@ -627,3 +628,8 @@ else
 fi
 
 rm -f $content_result
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
