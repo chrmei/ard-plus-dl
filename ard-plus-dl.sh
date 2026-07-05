@@ -240,6 +240,11 @@ normalize_url() {
     echo "$url"
 }
 
+sanitize_path_component() {
+    local s="${1//\// }"
+    printf '%s' "$s"
+}
+
 record_success() {
     echo "$1" >> "$SUCCESS_FILE"
     log_msg "Recorded success: $1"
@@ -369,7 +374,9 @@ download_url() {
         name=$(echo "$movie" | jq -r '.title')
         videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
         year=$(echo "$movie" | jq -r '.productionYear')
-        filename="${name/\// } (${year})/${name/\// }"
+        local safe_name
+        safe_name=$(sanitize_path_component "$name")
+        filename="${safe_name} (${year})/${safe_name}"
         if skip_if_exists "$filename"; then
             return 0
         fi
@@ -388,8 +395,9 @@ download_url() {
         cleanup
         return 0
     elif [[ "$tvshow" != null ]]; then
-        local requestedShow seasonIds seasonOutput selectedSeasonList selectedSeason
+        local requestedShow seasonIds seasonOutput selectedSeasonList selectedSeason safe_show
         requestedShow=$(echo "$contentResult" | jq -r '.data.series.title')
+        safe_show=$(sanitize_path_component "$requestedShow")
         seasonIds=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonInSeries, seasonId: .id, title: .title }]')
         seasonOutput=$(echo "$seasonIds" | jq '[.[] | { Option: .season, Titel: .title }]' | jq -r '(.[0]|keys_unsorted|(.,map(length*"-"))),.[]|map(.)|@tsv'|column -ts $'\t')
         log_msg ""
@@ -450,12 +458,13 @@ download_url() {
 
             while read episode_line
             do
-                local name videoUrl episode filename urlParam downloadUrl
+                local name videoUrl episode filename urlParam downloadUrl safe_episode_title
                 movieId=$(echo "$episode_line" | jq -r '.id')
                 name=$(echo "$episode_line" | jq -r '.title')
                 videoUrl=$(echo "$episode_line" | jq -r '.videoUrl')
                 episode=$(echo "$episode_line" | jq -r '.episodeNo')
-                filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E$(printf '%02d\n' $episode) - ${name}"
+                safe_episode_title=$(sanitize_path_component "$name")
+                filename="${safe_show}/Season ${selectedSeasonFormatted}/${safe_show} S${selectedSeasonFormatted}E$(printf '%02d\n' $episode) - ${safe_episode_title}"
                 if skip_if_exists "$filename"; then
                     continue
                 fi
@@ -506,7 +515,7 @@ download_url() {
 
         while read episode_line
         do
-            local episodeId episode_variables episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl
+            local episodeId episode_variables episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl safe_name safe_city safe_team
             episodeId=$(echo "$episode_line" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
             episode_variables=$(jq -nc \
                 --arg movieId "$episodeId" \
@@ -532,14 +541,17 @@ download_url() {
             episode=$(echo "$customData" | jq -r '.episodeProductionNumber')
             team=$(echo "$customData" | jq -r '.team')
             city=$(echo "$customData" | jq -r '.location')
-            filename="Tatort ${city}"
+            safe_city=$(sanitize_path_component "$city")
+            safe_team=$(sanitize_path_component "$team")
+            safe_name=$(sanitize_path_component "$name")
+            filename="Tatort ${safe_city}"
             if [[ -n "$team" ]]; then
-                filename="$filename (${team})"
+                filename="$filename (${safe_team})"
             fi
             if [[ "$episode" != null ]]; then
                 filename="$filename - Folge ${episode}"
             fi
-            filename="$filename - ${name} (${year})"
+            filename="$filename - ${safe_name} (${year})"
             if skip_if_exists "$filename"; then
                 continue
             fi
