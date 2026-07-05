@@ -13,7 +13,6 @@ source "${script_dir}/graphql-queries.sh"
 curlBin=$(which curl)
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
-FILE=ard-plus-token
 automatic_download=0
 batch_mode=0
 links_file=''
@@ -89,6 +88,19 @@ if [[ $batch_mode -eq 1 ]]; then
 fi
 downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
 mkdir -p "$downloads_dir"
+
+token_state_dir="${XDG_STATE_HOME:-}"
+if [[ -z "$token_state_dir" && -n "${HOME:-}" ]]; then
+    token_state_dir="${HOME}/.local/state"
+fi
+if [[ -n "$token_state_dir" ]]; then
+    token_state_dir="${token_state_dir}/ard-plus-dl"
+else
+    token_state_dir="${work_dir}/.ard-plus-dl"
+fi
+mkdir -p "$token_state_dir"
+chmod 700 "$token_state_dir" 2>/dev/null || true
+FILE="${token_state_dir}/token"
 
 content_result=$(mktemp)
 RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
@@ -240,6 +252,18 @@ normalize_url() {
     echo "$url"
 }
 
+decode_jwt_header() {
+    local token="$1"
+    local header_b64 padded
+    header_b64=$(printf '%s' "$token" | cut -f1 -d ".")
+    padded="$header_b64"
+    case $((${#padded} % 4)) in
+        2) padded="${padded}==" ;;
+        3) padded="${padded}=" ;;
+    esac
+    printf '%s' "$padded" | tr '_-' '/+' | base64 -d 2>/dev/null
+}
+
 record_success() {
     echo "$1" >> "$SUCCESS_FILE"
     log_msg "Recorded success: $1"
@@ -279,10 +303,14 @@ login() {
     -H 'origin: https://www.ardplus.de' \
     -H 'referer: https://www.ardplus.de/' \
     -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i authorization | awk '{print $3}' | tr -d \\r)
-    tokenType=$(echo $token | cut -f1 -d "." | base64 -d | jq -r '.typ')
+    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i '^authorization:' | head -n1 | awk '{print $3}' | tr -d '\r')
+    tokenType=$(decode_jwt_header "$token" | jq -r '.typ // empty')
     if [[ "$tokenType" == "JWT" ]]; then
-        echo $token | tr -d \\r > $FILE
+        local old_umask
+        old_umask=$(umask)
+        umask 077
+        printf '%s\n' "$token" > "$FILE"
+        umask "$old_umask"
     else
         echo "Login not possible! Please check credentials and subscription for user $username."
         exit 1
@@ -318,17 +346,18 @@ auth() {
 }
 
 ensure_token() {
-    if [ -f "$FILE" ]; then
-        token=$(<$FILE)
+    if [[ -f "$FILE" ]]; then
+        token=$(<"$FILE")
     else
-        login $username $password
+        login
     fi
 
     movieId="a0S010000007GcX"
     urlParam=$( auth )
-    if [[ "$urlParam" == null ]]; then
-        login $username $password
-        token=$(<$FILE)
+    if [[ "$urlParam" == null || -z "$urlParam" ]]; then
+        rm -f "$FILE"
+        login
+        token=$(<"$FILE")
         if [[ -z "$token" ]]; then
             echo "Login not possible! Please check credentials and subscription for user $username."
             exit 1
