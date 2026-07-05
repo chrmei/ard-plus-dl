@@ -405,9 +405,10 @@ download_url() {
             selectedSeasonList=$(echo "$seasonIds" | jq -r '.[].season')
         fi
 
+        local apply_episode_skip=1
         for selectedSeason in $selectedSeasonList
         do
-            local selectedSeasonId seasonData episodes amount selectedSeasonFormatted episode_line
+            local selectedSeasonId seasonData episodes amount selectedSeasonFormatted episode_line tail_from
             selectedSeasonId=$(echo "$seasonIds" | jq -r --argjson s "$selectedSeason" '.[] | select(.season == $s) | .seasonId')
             if [[ -z "$selectedSeasonId" || "$selectedSeasonId" == "null" ]]; then
                 DOWNLOAD_FAIL_REASON="season ${selectedSeason} not found"
@@ -440,9 +441,11 @@ download_url() {
             log_msg "Staffel $selectedSeason hat $amount Folgen."
             selectedSeasonFormatted=$(printf '%02d\n' "$selectedSeason")
 
-            if [[ $episode_skip != "1" ]]; then
-                log_msg "Überspringe $episode_skip Episode(n)."
-                episode_skip=$((episode_skip + 1))
+            tail_from=1
+            if [[ $episode_skip != "1" && $apply_episode_skip -eq 1 ]]; then
+                tail_from=$((episode_skip + 1))
+                log_msg "Überspringe $episode_skip Episode(n) in der ersten Staffel."
+                apply_episode_skip=0
             fi
 
             while read episode_line
@@ -469,7 +472,7 @@ download_url() {
                     return 1
                 fi
                 cleanup
-            done < <(echo "$episodes" | sed 's/\\"//g' | jq -c '.[]' | tail -n +$episode_skip)
+            done < <(echo "$episodes" | sed 's/\\"//g' | jq -c '.[]' | tail -n +$tail_from)
         done
         return 0
     elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
