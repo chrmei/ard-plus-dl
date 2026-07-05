@@ -570,14 +570,13 @@ download_url() {
     fi
 }
 
-# intercept CTRL+C click to clean up before exit
-term() {
-    echo "CTRL+C pressed. Cleanup and exit!"
-    cleanup
-    rm -f $content_result
-    exit 0
+# intercept CTRL+C / SIGTERM to clean up before exit
+cleanup_tmp() {
+    rm -f "$content_result"
 }
-trap term SIGINT
+
+trap cleanup_tmp EXIT
+trap 'echo "CTRL+C pressed. Cleanup and exit!"; cleanup; exit 130' INT TERM
 
 ensure_token
 
@@ -625,5 +624,3 @@ else
         exit 1
     fi
 fi
-
-rm -f $content_result
