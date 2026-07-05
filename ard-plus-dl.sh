@@ -476,7 +476,8 @@ download_url() {
         done
         return 0
     elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
-        local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line
+        local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line tatort_result
+        tatort_result=$(mktemp)
         tatortCity=$(echo $showPath | cut -d "-" -f2)
         tatortResponse=$("$curlBin" -s "https://www.ardplus.de/kategorie/$showPath" \
         --header 'authority: data.ardplus.de' \
@@ -488,6 +489,7 @@ download_url() {
 
         tatortCityEpisodes=$(echo $tatortResponse | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
         if [[ -z "$tatortCityEpisodes" ]]; then
+            rm -f "$tatort_result"
             DOWNLOAD_FAIL_REASON="could not parse Tatort episode list from category page"
             return 1
         fi
@@ -512,9 +514,10 @@ download_url() {
                 --arg movieId "$episodeId" \
                 '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
 
-            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "current-tatort-episode.txt"); then
+            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "$tatort_result"); then
                 local tatort_error
-                tatort_error=$(jq -r '.errors[0].message // empty' "current-tatort-episode.txt" 2>/dev/null)
+                tatort_error=$(jq -r '.errors[0].message // empty' "$tatort_result" 2>/dev/null)
+                rm -f "$tatort_result"
                 if [[ -n "$tatort_error" ]]; then
                     DOWNLOAD_FAIL_REASON="could not fetch Tatort episode details (graphql: ${tatort_error})"
                 else
@@ -523,7 +526,7 @@ download_url() {
                 return 1
             fi
 
-            episodeDetails=$(cat current-tatort-episode.txt)
+            episodeDetails=$(cat "$tatort_result")
             movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
             name=$(echo "$episodeDetails" | jq -r '.data.movie.title')
             videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
@@ -547,17 +550,20 @@ download_url() {
             if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
                 DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
                 cleanup
+                rm -f "$tatort_result"
                 return 1
             fi
             downloadUrl=${videoUrl}?${urlParam}
             log_msg "Lade ${filename}..."
             if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
                 cleanup
+                rm -f "$tatort_result"
                 return 1
             fi
             cleanup
             sleep 1
         done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$episode_skip )
+        rm -f "$tatort_result"
         return 0
     else
         if [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
