@@ -249,29 +249,56 @@ login() {
 
 # cleanup after each episode and at the end
 cleanup() {
-    deleteToken=$("$curlBin" -s 'https://token.ardplus.de/token/session/playback/delete' \
+    [[ -n "$movieId" && -n "$contentType" ]] || return 0
+    local payload
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{contentId: $contentId, contentType: $contentType}')
+    "$curlBin" -s 'https://token.ardplus.de/token/session/playback/delete' \
     -H 'authority: token.ardplus.de' \
     -H 'content-type: application/json' \
     -H "cookie: sid=$token" \
     -H 'origin: https://www.ardplus.de' \
     -H 'referer: https://www.ardplus.de/' \
     -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-    --data-raw "{\"contentId\":\"$movieId\",\"contentType\":\"CmsMovie\"}" \
-    --compressed)
+    --data-raw "$payload" \
+    --compressed >/dev/null
 }
 
 # get authorization for content
 auth() {
-    auth=$("$curlBin" -s 'https://token.ardplus.de/token/session' \
+    [[ -n "$movieId" && -n "$contentType" ]] || { echo ""; return 0; }
+    local payload auth_response urlParam
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{
+            contentId: $contentId,
+            contentType: $contentType,
+            download: false,
+            appInfo: {platform: "web", appVersion: "1.0.0", build: "web", bundleIdentifier: "web"},
+            deviceInfo: {
+                isTouchDevice: false,
+                isTablet: false,
+                isFireOS: false,
+                appPlatform: "web",
+                isIOS: false,
+                isCastReceiver: false,
+                isSafari: false,
+                isFirefox: false
+            }
+        }')
+    auth_response=$("$curlBin" -s 'https://token.ardplus.de/token/session' \
         -H 'authority: token.ardplus.de' \
         -H 'content-type: application/json' \
         -H "cookie: sid=$token" \
         -H 'origin: https://www.ardplus.de' \
         -H 'referer: https://www.ardplus.de/' \
         -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-        --data-raw "{\"contentId\":\"$movieId\",\"contentType\":\"CmsEpisode\",\"download\":false,\"appInfo\":{\"platform\":\"web\",\"appVersion\":\"1.0.0\",\"build\":\"web\",\"bundleIdentifier\":\"web\"},\"deviceInfo\":{\"isTouchDevice\":false,\"isTablet\":false,\"isFireOS\":false,\"appPlatform\":\"web\",\"isIOS\":false,\"isCastReceiver\":false,\"isSafari\":false,\"isFirefox\":false}}" \
+        --data-raw "$payload" \
         --compressed)
-    urlParam=$(echo ${auth} | jq -r '.authorizationParams')
+    urlParam=$(echo "$auth_response" | jq -r '.authorizationParams // empty')
     echo "$urlParam"
 }
 
@@ -286,6 +313,7 @@ ensure_token() {
     fi
 
     movieId="a0S010000007GcX"
+    contentType="CmsMovie"
     urlParam=$(auth)
     if [[ "$urlParam" == null || -z "$urlParam" ]]; then
         rm -f "$token_file"
@@ -338,6 +366,7 @@ download_url() {
 
     if [[ "$movie" != null ]]; then
         movieId=$(echo "$movie" | jq -r '.id')
+        contentType="CmsMovie"
         name=$(echo "$movie" | jq -r '.title // empty')
         videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
         year=$(echo "$movie" | jq -r '.productionYear // empty')
@@ -351,8 +380,8 @@ download_url() {
         if skip_if_exists "$filename"; then
             return 0
         fi
-        urlParam=$( auth )
-        if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+        urlParam=$(auth)
+        if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
             DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for movie"
             cleanup
             return 1
@@ -431,6 +460,7 @@ download_url() {
             do
                 local name videoUrl episode filename urlParam downloadUrl safe_episode_title
                 movieId=$(echo "$episode_line" | jq -r '.id')
+                contentType="CmsEpisode"
                 name=$(echo "$episode_line" | jq -r '.title // empty')
                 videoUrl=$(echo "$episode_line" | jq -r '.videoUrl')
                 episode=$(echo "$episode_line" | jq -r '.episodeNo // empty')
@@ -443,8 +473,8 @@ download_url() {
                 if skip_if_exists "$filename"; then
                     continue
                 fi
-                urlParam=$( auth )
-                if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+                urlParam=$(auth)
+                if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
                     DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
                     cleanup
                     return 1
@@ -512,6 +542,7 @@ download_url() {
 
             episodeDetails=$(cat "$tatort_result")
             movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
+            contentType="CmsMovie"
             name=$(echo "$episodeDetails" | jq -r '.data.movie.title // empty')
             videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
             year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear // empty')
@@ -537,8 +568,8 @@ download_url() {
             if skip_if_exists "$filename"; then
                 continue
             fi
-            urlParam=$( auth )
-            if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+            urlParam=$(auth)
+            if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
                 DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
                 cleanup
                 rm -f "$tatort_result"
@@ -615,6 +646,7 @@ else
     skip=$4
 fi
 movieId=''
+contentType=''
 token=''
 
 if [[ -z "$username" || -z "$password" ]]; then

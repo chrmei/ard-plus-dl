@@ -249,6 +249,43 @@ test_null_safe_filenames() {
     assert_equals 'series without episode number uses placeholder' 'Show S01E?? - Pilot' "$filename"
 }
 
+test_session_payloads() {
+    printf '\n[session payloads]\n'
+    local payload
+    movieId='abc123'
+    contentType='CmsEpisode'
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{
+            contentId: $contentId,
+            contentType: $contentType,
+            download: false,
+            appInfo: {platform: "web", appVersion: "1.0.0", build: "web", bundleIdentifier: "web"},
+            deviceInfo: {
+                isTouchDevice: false,
+                isTablet: false,
+                isFireOS: false,
+                appPlatform: "web",
+                isIOS: false,
+                isCastReceiver: false,
+                isSafari: false,
+                isFirefox: false
+            }
+        }')
+    assert_equals 'auth payload uses tracked contentType' 'CmsEpisode' \
+        "$(echo "$payload" | jq -r '.contentType')"
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType 'CmsMovie' \
+        '{contentId: $contentId, contentType: $contentType}')
+    assert_equals 'cleanup payload uses tracked contentType' 'CmsMovie' \
+        "$(echo "$payload" | jq -r '.contentType')"
+    movieId=''
+    contentType=''
+    assert_success 'cleanup skips without content context' cleanup
+}
+
 test_cleanup_tmp() {
     printf '\n[cleanup_tmp]\n'
     local tmp
@@ -283,6 +320,7 @@ main() {
     test_skip_logic
     test_episode_json_parsing
     test_null_safe_filenames
+    test_session_payloads
     test_cleanup_tmp
     test_cli_validation
 
