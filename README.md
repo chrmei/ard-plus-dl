@@ -16,7 +16,7 @@ Fork von [marco79cgn/ard-plus-dl](https://github.com/marco79cgn/ard-plus-dl) mit
 
 ## Voraussetzungen
 
-Bash, [jq](https://jqlang.github.io/jq/), [yt-dlp](https://github.com/yt-dlp/yt-dlp), GNU-Tools (`curl`, `grep`, `awk`, `cut`, `sed`, `base64`, `tr`) und eine aktive [ARD-Plus-Mitgliedschaft](https://www.ardplus.de/).
+Bash, [jq](https://jqlang.github.io/jq/), [yt-dlp](https://github.com/yt-dlp/yt-dlp), [ffmpeg](https://ffmpeg.org/) (von yt-dlp für `--merge-output-format mp4`, `bv+mergeall` und `--embed-subs` benötigt — bei Installation über pip oft nicht automatisch dabei), `perl` (Tatort-Episodenliste aus `ld+json`), `column` aus [util-linux](https://git.kernel.org/pub/scm/utils/util-linux/util-linux.git/) (Staffeltabelle; nicht auf allen Systemen in coreutils enthalten), GNU-Tools (`curl`, `grep`, `awk`, `cut`, `sed`, `base64`, `tr`) und eine aktive [ARD-Plus-Mitgliedschaft](https://www.ardplus.de/).
 
 ## Installation
 
@@ -46,7 +46,11 @@ chmod 755 ard-plus-dl.sh
 | `--force-redownload` | Vorhandene `.mp4`-Dateien erneut laden |
 | `url` | ARD-Plus-Übersichtsseite (Film, Serie oder Tatort-Kategorie) |
 | `username`, `password` | Optional: eigene ARD-Plus-Zugangsdaten (siehe [Zugangsdaten](#zugangsdaten)) |
-| `skip` | Optional: erste N Episoden überspringen (Standard: `1`) |
+| `skip` | Optional, nur Serien: erste N Episoden der **ersten Staffel** überspringen. Ohne Angabe oder mit `0`/`1`: nichts überspringen. `N` ≥ 2 überspringt die ersten N Episoden der ersten Staffel; weitere Staffeln starten jeweils bei Episode 1. Bei Tatort-Kategorien gilt dieser Parameter nicht (`--automatic`: alle Episoden; interaktiv: separate Abfrage). |
+
+### `skip`-Parameter (Serien)
+
+Der optionale Zähler am Ende der Kommandozeile steuert nur Serien-Downloads. Intern wird er an `tail -n +…` übergeben; der Standardwert `1` bedeutet daher **kein** Überspringen (nicht „eine Episode überspringen“). Explizit `0` oder `1` hat dieselbe Wirkung. Ein Wert `N` ≥ 2 lässt die ersten N Episoden der ersten verarbeiteten Staffel aus; jede weitere Staffel beginnt wieder bei Episode 1.
 
 ### Zugangsdaten
 
