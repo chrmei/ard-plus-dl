@@ -93,6 +93,13 @@ test_normalize_url() {
         "$(normalize_url '  https://www.ardplus.de/details/foo  ')"
 }
 
+test_sanitize_path_component() {
+    printf '\n[sanitize_path_component]\n'
+    assert_equals 'replaces single slash' 'A B' "$(sanitize_path_component 'A/B')"
+    assert_equals 'replaces all slashes' 'A B C' "$(sanitize_path_component 'A/B/C')"
+    assert_equals 'leaves title without slashes unchanged' 'Normal Title' "$(sanitize_path_component 'Normal Title')"
+}
+
 test_graphql_response_ok() {
     printf '\n[graphql_response_ok]\n'
     assert_success 'accepts valid response' \
@@ -227,6 +234,7 @@ test_cli_validation() {
 main() {
     printf 'Running ard-plus-dl tests...\n'
     test_normalize_url
+    test_sanitize_path_component
     test_graphql_response_ok
     test_download_paths
     test_skip_logic
