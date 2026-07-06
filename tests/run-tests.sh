@@ -116,6 +116,12 @@ test_normalize_url() {
     assert_equals 'trims whitespace' \
         'https://www.ardplus.de/details/foo' \
         "$(normalize_url '  https://www.ardplus.de/details/foo  ')"
+    assert_equals 'strips query string' \
+        'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt' \
+        "$(normalize_url 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt?utm_source=share')"
+    assert_equals 'strips query and trailing slash' \
+        'https://www.ardplus.de/details/foo' \
+        "$(normalize_url 'https://www.ardplus.de/details/foo/?ref=1')"
 }
 
 test_sanitize_path_component() {

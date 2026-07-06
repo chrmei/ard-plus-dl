@@ -152,6 +152,7 @@ skip_if_exists() {
 normalize_url() {
     local url="$1"
     url="${url%%#*}"
+    url="${url%%\?*}"
     url="${url%"${url##*[![:space:]]}"}"
     url="${url#"${url%%[![:space:]]*}"}"
     url="${url%/}"
@@ -312,6 +313,10 @@ download_url() {
     DOWNLOAD_FAIL_REASON=''
     showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
     showId=$(echo "$showPath" | cut -d "-" -f1)
+    if [[ -z "$showId" ]]; then
+        DOWNLOAD_FAIL_REASON="could not parse content ID from URL"
+        return 1
+    fi
 
     content_variables=$(jq -nc \
         --arg movieId "$showId" \
@@ -698,7 +703,7 @@ if [[ $batch_mode -eq 1 ]]; then
     log_msg "Successful links: ${SUCCESS_FILE}"
     log_msg "Failed links: ${FAILED_FILE}"
 else
-    if download_url "$ardPlusUrl" "$skip"; then
+    if download_url "$(normalize_url "$ardPlusUrl")" "$skip"; then
         cleanup
     else
         cleanup
