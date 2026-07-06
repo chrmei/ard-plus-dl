@@ -1,4 +1,5 @@
 #!/bin/bash
+set -u -o pipefail
 script_path="${BASH_SOURCE[0]}"
 if [[ -L "$script_path" ]]; then
     script_path="$(readlink "$script_path")"
@@ -10,7 +11,7 @@ script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 # shellcheck source=graphql-queries.sh
 source "${script_dir}/graphql-queries.sh"
 
-curlBin=$(which curl)
+curlBin=''
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
 token_file=''
@@ -19,6 +20,20 @@ batch_mode=0
 links_file=''
 DOWNLOAD_FAIL_REASON=''
 skip_existing_files=1
+
+check_dependencies() {
+    local dep missing=()
+    for dep in curl jq yt-dlp perl column; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            missing+=("$dep")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        printf 'Missing required dependencies: %s\n' "${missing[*]}" >&2
+        exit 1
+    fi
+    curlBin=$(command -v curl)
+}
 
 log_msg() {
     echo "$1"
@@ -336,7 +351,7 @@ ensure_token() {
 download_url() {
     local ardPlusUrl="$1"
     local episode_skip="$2"
-    local showPath showId content_variables seasonsStatus contentResult movie tvshow
+    local showPath showId content_variables contentResult movie tvshow
 
     DOWNLOAD_FAIL_REASON=''
     showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
@@ -349,7 +364,7 @@ download_url() {
     content_variables=$(jq -nc \
         --arg movieId "$showId" \
         '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
-    if ! seasonsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$content_variables" "$content_result"); then
+    if ! fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$content_variables" "$content_result" >/dev/null; then
         local metadata_error
         metadata_error=$(jq -r '.errors[0].message // empty' "$content_result" 2>/dev/null)
         if [[ -n "$metadata_error" ]]; then
@@ -360,7 +375,7 @@ download_url() {
         return 1
     fi
 
-    contentResult=$(cat $content_result)
+    contentResult=$(cat "$content_result")
     movie=$(echo "$contentResult" | jq '.data.movie')
     tvshow=$(echo "$contentResult" | jq '.data.series')
 
@@ -386,7 +401,7 @@ download_url() {
             cleanup
             return 1
         fi
-        downloadUrl=${videoUrl}?${urlParam}
+        downloadUrl="${videoUrl}?${urlParam}"
         log_msg "Lade Film ${filename}..."
         if ! run_yt_dlp "$downloadUrl" "$filename" "$name"; then
             cleanup
@@ -423,10 +438,10 @@ download_url() {
                 return 1
             fi
 
-            local season_result episode_status season_variables
+            local season_result season_variables
             season_result=$(mktemp)
             season_variables=$(jq -nc --arg seasonId "$selectedSeasonId" '{seasonId: $seasonId}')
-            if ! episode_status=$(fetch_graphql "EpisodesInSeasonData" "$GRAPHQL_EPISODES_IN_SEASON" "$season_variables" "$season_result"); then
+            if ! fetch_graphql "EpisodesInSeasonData" "$GRAPHQL_EPISODES_IN_SEASON" "$season_variables" "$season_result" >/dev/null; then
                 local episode_error
                 episode_error=$(jq -r '.errors[0].message // empty' "$season_result" 2>/dev/null)
                 rm -f "$season_result"
@@ -479,7 +494,7 @@ download_url() {
                     cleanup
                     return 1
                 fi
-                downloadUrl=${videoUrl}?${urlParam}
+                downloadUrl="${videoUrl}?${urlParam}"
                 log_msg "Lade ${filename}..."
                 if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
                     cleanup
@@ -492,7 +507,7 @@ download_url() {
     elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
         local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line tatort_result
         tatort_result=$(mktemp)
-        tatortCity=$(echo $showPath | cut -d "-" -f2)
+        tatortCity=$(echo "$showPath" | cut -d "-" -f2)
         tatortResponse=$("$curlBin" -s "https://www.ardplus.de/kategorie/$showPath" \
         --header 'authority: data.ardplus.de' \
         --header 'content-type: application/json' \
@@ -501,15 +516,15 @@ download_url() {
         --header 'referer: https://www.ardplus.de/' \
         --header 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
 
-        tatortCityEpisodes=$(echo $tatortResponse | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
+        tatortCityEpisodes=$(echo "$tatortResponse" | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
         if [[ -z "$tatortCityEpisodes" ]]; then
             rm -f "$tatort_result"
             DOWNLOAD_FAIL_REASON="could not parse Tatort episode list from category page"
             return 1
         fi
 
-        amount=$(echo $tatortCityEpisodes | jq '.itemListElement | length')
-        cityCapitalized=$(echo ${tatortCity} | awk '{$1=toupper(substr($1,0,1))substr($1,2)}1')
+        amount=$(echo "$tatortCityEpisodes" | jq '.itemListElement | length')
+        cityCapitalized=$(echo "${tatortCity}" | awk '{$1=toupper(substr($1,0,1))substr($1,2)}1')
         log_msg "Der Tatort ${cityCapitalized} hat $amount Episoden."
         if [ $automatic_download -eq 0 ]; then
             echo -n "Wie viele Episoden möchtest du überspringen? (0=alle laden) "
@@ -522,13 +537,13 @@ download_url() {
 
         while read -r episode_line
         do
-            local episodeId episode_variables episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl safe_name safe_city safe_team
+            local episodeId episode_variables episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl safe_name safe_city safe_team
             episodeId=$(echo "$episode_line" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
             episode_variables=$(jq -nc \
                 --arg movieId "$episodeId" \
                 '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
 
-            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "$tatort_result"); then
+            if ! fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "$tatort_result" >/dev/null; then
                 local tatort_error
                 tatort_error=$(jq -r '.errors[0].message // empty' "$tatort_result" 2>/dev/null)
                 if [[ -n "$tatort_error" ]]; then
@@ -575,7 +590,7 @@ download_url() {
                 rm -f "$tatort_result"
                 return 1
             fi
-            downloadUrl=${videoUrl}?${urlParam}
+            downloadUrl="${videoUrl}?${urlParam}"
             log_msg "Lade ${filename}..."
             if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
                 cleanup
@@ -584,7 +599,7 @@ download_url() {
             fi
             cleanup
             sleep 1
-        done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$episode_skip )
+        done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +"$episode_skip")
         rm -f "$tatort_result"
         return 0
     else
@@ -623,7 +638,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --links-file)
-            if [[ -z "$2" || "$2" == -* ]]; then
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
                 echo "Error: --links-file requires a file argument" >&2
                 exit 1
             fi
@@ -642,14 +657,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $batch_mode -eq 1 ]]; then
-    username=$1
-    password=$2
-    skip=$3
+    username=${1:-}
+    password=${2:-}
+    skip=${3:-}
 else
-    ardPlusUrl=$1
-    username=$2
-    password=$3
-    skip=$4
+    ardPlusUrl=${1:-}
+    username=${2:-}
+    password=${3:-}
+    skip=${4:-}
 fi
 movieId=''
 contentType=''
@@ -678,6 +693,8 @@ fi
 if [[ -z "$skip" ]]; then
     skip=1
 fi
+
+check_dependencies
 
 work_dir=$(pwd)
 if [[ $batch_mode -eq 1 ]]; then
