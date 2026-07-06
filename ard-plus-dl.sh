@@ -599,7 +599,13 @@ download_url() {
 }
 
 cleanup_tmp() {
-    [[ -n "${content_result:-}" ]] && rm -f "$content_result"
+    # season_result/tatort_result are locals of download_url; they are still in
+    # scope when a signal interrupts the download loops and empty otherwise.
+    local f
+    for f in "${content_result:-}" "${season_result:-}" "${tatort_result:-}"; do
+        [[ -n "$f" ]] && rm -f "$f"
+    done
+    return 0
 }
 
 handle_interrupt() {

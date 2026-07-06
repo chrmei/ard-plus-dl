@@ -288,12 +288,17 @@ test_session_payloads() {
 
 test_cleanup_tmp() {
     printf '\n[cleanup_tmp]\n'
-    local tmp
-    tmp=$(mktemp)
-    content_result="$tmp"
+    content_result=$(mktemp)
+    season_result=$(mktemp)
+    tatort_result=$(mktemp)
     cleanup_tmp
     assert_failure 'removes content_result temp file' test -f "$content_result"
+    assert_failure 'removes season_result temp file' test -f "$season_result"
+    assert_failure 'removes tatort_result temp file' test -f "$tatort_result"
     content_result=''
+    season_result=''
+    tatort_result=''
+    assert_success 'is a no-op with empty paths' cleanup_tmp
 }
 
 test_cli_validation() {
