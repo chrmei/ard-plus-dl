@@ -284,10 +284,14 @@ download_url() {
 
     if [[ "$movie" != null ]]; then
         movieId=$(echo "$movie" | jq -r '.id')
-        name=$(echo "$movie" | jq -r '.title')
+        name=$(echo "$movie" | jq -r '.title // empty')
         videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
-        year=$(echo "$movie" | jq -r '.productionYear')
-        filename="${name/\// } (${year})/${name/\// }"
+        year=$(echo "$movie" | jq -r '.productionYear // empty')
+        if [[ -n "$year" ]]; then
+            filename="${name/\// } (${year})/${name/\// }"
+        else
+            filename="${name/\// }/${name/\// }"
+        fi
         if skip_if_exists "$filename"; then
             return 0
         fi
@@ -307,7 +311,7 @@ download_url() {
         return 0
     elif [[ "$tvshow" != null ]]; then
         local requestedShow seasonIds seasonOutput selectedSeasonList selectedSeason
-        requestedShow=$(echo "$contentResult" | jq -r '.data.series.title')
+        requestedShow=$(echo "$contentResult" | jq -r '.data.series.title // empty')
         seasonIds=$(echo "$contentResult" | jq '[.data.series.seasons.nodes[] | { season: .seasonInSeries, seasonId: .id, title: .title }]')
         seasonOutput=$(echo "$seasonIds" | jq '[.[] | { Option: .season, Titel: .title }]' | jq -r '(.[0]|keys_unsorted|(.,map(length*"-"))),.[]|map(.)|@tsv'|column -ts $'\t')
         log_msg ""
@@ -370,10 +374,14 @@ download_url() {
             do
                 local name videoUrl episode filename urlParam downloadUrl
                 movieId=$(echo "$episode_line" | jq -r '.id')
-                name=$(echo "$episode_line" | jq -r '.title')
+                name=$(echo "$episode_line" | jq -r '.title // empty')
                 videoUrl=$(echo "$episode_line" | jq -r '.videoUrl')
-                episode=$(echo "$episode_line" | jq -r '.episodeNo')
-                filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E$(printf '%02d\n' $episode) - ${name}"
+                episode=$(echo "$episode_line" | jq -r '.episodeNo // empty')
+                if [[ -n "$episode" ]]; then
+                    filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E$(printf '%02d\n' "$episode") - ${name}"
+                else
+                    filename="${requestedShow/\// }/Season ${selectedSeasonFormatted}/${requestedShow/\// } S${selectedSeasonFormatted}E?? - ${name}"
+                fi
                 if skip_if_exists "$filename"; then
                     continue
                 fi
@@ -443,21 +451,25 @@ download_url() {
 
             episodeDetails=$(cat current-tatort-episode.txt)
             movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
-            name=$(echo "$episodeDetails" | jq -r '.data.movie.title')
+            name=$(echo "$episodeDetails" | jq -r '.data.movie.title // empty')
             videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
-            year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear')
-            customData=$(echo "$episodeDetails" | jq -r '.data.movie.customData')
-            episode=$(echo "$customData" | jq -r '.episodeProductionNumber')
-            team=$(echo "$customData" | jq -r '.team')
-            city=$(echo "$customData" | jq -r '.location')
+            year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear // empty')
+            customData=$(echo "$episodeDetails" | jq '.data.movie.customData // {}')
+            episode=$(echo "$customData" | jq -r '.episodeProductionNumber // empty')
+            team=$(echo "$customData" | jq -r '.team // empty')
+            city=$(echo "$customData" | jq -r '.location // empty')
             filename="Tatort ${city}"
             if [[ -n "$team" ]]; then
                 filename="$filename (${team})"
             fi
-            if [[ "$episode" != null ]]; then
+            if [[ -n "$episode" ]]; then
                 filename="$filename - Folge ${episode}"
             fi
-            filename="$filename - ${name} (${year})"
+            if [[ -n "$year" ]]; then
+                filename="$filename - ${name} (${year})"
+            else
+                filename="$filename - ${name}"
+            fi
             if skip_if_exists "$filename"; then
                 continue
             fi

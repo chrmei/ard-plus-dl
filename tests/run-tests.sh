@@ -156,6 +156,61 @@ test_episode_json_parsing() {
     assert_equals 'preserves quotes in episode title' 'Say "Hi" Ep' "$title"
 }
 
+test_null_safe_filenames() {
+    printf '\n[null-safe filenames]\n'
+    local movie year name filename
+    local customData episode team city
+
+    movie='{"title":"My Movie","productionYear":null}'
+    name=$(echo "$movie" | jq -r '.title // empty')
+    year=$(echo "$movie" | jq -r '.productionYear // empty')
+    if [[ -n "$year" ]]; then
+        filename="${name} (${year})/${name}"
+    else
+        filename="${name}/${name}"
+    fi
+    assert_equals 'movie without year omits (null)' 'My Movie/My Movie' "$filename"
+
+    movie='{"title":"My Movie","productionYear":2020}'
+    year=$(echo "$movie" | jq -r '.productionYear // empty')
+    if [[ -n "$year" ]]; then
+        filename="My Movie (${year})/My Movie"
+    else
+        filename="My Movie/My Movie"
+    fi
+    assert_equals 'movie with year includes year' 'My Movie (2020)/My Movie' "$filename"
+
+    customData=$(echo '{"customData":null}' | jq '.customData // {}')
+    team=$(echo "$customData" | jq -r '.team // empty')
+    assert_equals 'null customData yields empty team' '' "$team"
+    assert_failure 'null team string is not treated as present' test -n "$team"
+
+    customData=$(echo '{"team":null}' | jq '.')
+    team=$(echo "$customData" | jq -r '.team // empty')
+    assert_equals 'null team field yields empty string' '' "$team"
+
+    customData='{"team":"Köln","location":"Köln","episodeProductionNumber":null}'
+    episode=$(echo "$customData" | jq -r '.episodeProductionNumber // empty')
+    team=$(echo "$customData" | jq -r '.team // empty')
+    city=$(echo "$customData" | jq -r '.location // empty')
+    filename="Tatort ${city}"
+    [[ -n "$team" ]] && filename="$filename (${team})"
+    [[ -n "$episode" ]] && filename="$filename - Folge ${episode}"
+    filename="$filename - Episode Title"
+    assert_equals 'tatort without episode omits folge' \
+        'Tatort Köln (Köln) - Episode Title' "$filename"
+
+    local episode_line episode_no
+    episode_line='{"episodeNo":null,"title":"Pilot"}'
+    episode_no=$(echo "$episode_line" | jq -r '.episodeNo // empty')
+    if [[ -n "$episode_no" ]]; then
+        filename="Show S01E$(printf '%02d' "$episode_no") - Pilot"
+    else
+        filename="Show S01E?? - Pilot"
+    fi
+    assert_equals 'series without episode number uses placeholder' 'Show S01E?? - Pilot' "$filename"
+}
+
 test_cli_validation() {
     printf '\n[cli validation]\n'
     local script="$ROOT_DIR/ard-plus-dl.sh"
@@ -176,6 +231,7 @@ main() {
     test_download_paths
     test_skip_logic
     test_episode_json_parsing
+    test_null_safe_filenames
     test_cli_validation
 
     printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
