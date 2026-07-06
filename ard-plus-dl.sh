@@ -562,12 +562,14 @@ download_url() {
     fi
 }
 
-# intercept CTRL+C click to clean up before exit
-term() {
+cleanup_tmp() {
+    [[ -n "${content_result:-}" ]] && rm -f "$content_result"
+}
+
+handle_interrupt() {
     echo "CTRL+C pressed. Cleanup and exit!"
     cleanup
-    rm -f $content_result
-    exit 0
+    exit 130
 }
 
 main() {
@@ -654,7 +656,8 @@ if [[ $batch_mode -eq 1 ]]; then
     LOG_FILE="$logs_dir/download_log_${RUN_TS}.txt"
     touch "$SUCCESS_FILE" "$FAILED_FILE" "$LOG_FILE"
 fi
-trap term SIGINT
+trap cleanup_tmp EXIT
+trap handle_interrupt INT TERM
 
 ensure_token
 
@@ -702,8 +705,6 @@ else
         exit 1
     fi
 fi
-
-rm -f $content_result
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -243,6 +243,16 @@ test_null_safe_filenames() {
     assert_equals 'series without episode number uses placeholder' 'Show S01E?? - Pilot' "$filename"
 }
 
+test_cleanup_tmp() {
+    printf '\n[cleanup_tmp]\n'
+    local tmp
+    tmp=$(mktemp)
+    content_result="$tmp"
+    cleanup_tmp
+    assert_failure 'removes content_result temp file' test -f "$content_result"
+    content_result=''
+}
+
 test_cli_validation() {
     printf '\n[cli validation]\n'
     local script="$ROOT_DIR/ard-plus-dl.sh"
@@ -267,6 +277,7 @@ main() {
     test_skip_logic
     test_episode_json_parsing
     test_null_safe_filenames
+    test_cleanup_tmp
     test_cli_validation
 
     printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
