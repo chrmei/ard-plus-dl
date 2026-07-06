@@ -36,7 +36,7 @@ chmod 755 ard-plus-dl.sh
 ## Verwendung
 
 ```bash
-./ard-plus-dl.sh [--automatic] [--links-file <datei>] [--force-redownload] <url> <username> <password> [skip]
+./ard-plus-dl.sh [--automatic] [--links-file <datei>] [--force-redownload] <url> [<username> <password>] [skip]
 ```
 
 | Option / Parameter | Beschreibung |
@@ -45,22 +45,45 @@ chmod 755 ard-plus-dl.sh
 | `--links-file <datei>` | Mehrere URLs aus Datei (aktiviert `--automatic`) |
 | `--force-redownload` | Vorhandene `.mp4`-Dateien erneut laden |
 | `url` | ARD-Plus-Übersichtsseite (Film, Serie oder Tatort-Kategorie) |
-| `username`, `password` | Eigene ARD-Plus-Zugangsdaten |
+| `username`, `password` | Optional: eigene ARD-Plus-Zugangsdaten (siehe [Zugangsdaten](#zugangsdaten)) |
 | `skip` | Optional: erste N Episoden überspringen (Standard: `1`) |
+
+### Zugangsdaten
+
+Zugangsdaten werden in dieser Reihenfolge gesucht:
+
+1. **Positionsargumente** `<username> <password>` - **nicht empfohlen**, da Kommandozeilenargumente für alle Prozesse auf dem System sichtbar sind (`ps`, `/proc/<pid>/cmdline`) und in der Shell-History landen.
+2. **Umgebungsvariablen** `ARD_PLUS_USER` und `ARD_PLUS_PASSWORD` - empfohlen, auch für Docker (`docker run -e ...` oder `--env-file`).
+3. **Zugangsdaten-Datei** `~/.config/ard-plus-dl/credentials` (Pfad via `ARD_PLUS_CREDENTIALS_FILE` änderbar, `chmod 600` empfohlen):
+
+   ```ini
+   username=mein-benutzer
+   password=mein-passwort
+   ```
+
+4. **Interaktive Abfrage** beim Login, falls nichts davon gesetzt ist.
+
+Sobald ein gültiges Session-Token existiert (`~/.local/state/ard-plus-dl/token`), sind für weitere Aufrufe gar keine Zugangsdaten nötig.
 
 **Beispiele:**
 
 ```bash
+# Empfohlen: Zugangsdaten per Umgebungsvariablen
+export ARD_PLUS_USER='user' ARD_PLUS_PASSWORD='pass'
+
 # Serie (interaktiv) / Film / Tatort
-./ard-plus-dl.sh 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind' user pass
-./ard-plus-dl.sh 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt' user pass
-./ard-plus-dl.sh 'https://www.ardplus.de/kategorie/tatort-bremen' user pass
+./ard-plus-dl.sh 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind'
+./ard-plus-dl.sh 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt'
+./ard-plus-dl.sh 'https://www.ardplus.de/kategorie/tatort-bremen'
 
 # Unbeaufsichtigt (eigene Inhalte, gültiges Abo vorausgesetzt)
-./ard-plus-dl.sh --automatic 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind' user pass
+./ard-plus-dl.sh --automatic 'https://www.ardplus.de/details/a0T0100000064DB-gegen-den-wind'
 
 # Mehrere URLs - eine pro Zeile, `#`-Kommentare erlaubt (siehe links.txt.example)
-./ard-plus-dl.sh --links-file links.txt user pass
+./ard-plus-dl.sh --links-file links.txt
+
+# Weiterhin möglich (nicht empfohlen): Zugangsdaten als Argumente
+./ard-plus-dl.sh 'https://www.ardplus.de/kategorie/tatort-bremen' user pass
 ```
 
 Unterbrochene Downloads einfach erneut starten - vorhandene Dateien werden übersprungen (`SKIP (already exists)` im Log). Bei `--links-file` entstehen Protokolle in `logs/` (`download_log_*`, `successful_links_*`, `failed_links_*`).
@@ -90,9 +113,12 @@ Es wird kein vorgefertigtes Container-Image veröffentlicht. Image lokal bauen u
 git clone https://github.com/chrmei/ard-plus-dl.git
 cd ard-plus-dl
 docker build -t ard-plus-dl .
-docker run --rm -it -v "$(pwd)/:/data" ard-plus-dl download \
-  'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber' "username" "password"
+docker run --rm -it -v "$(pwd)/:/data" \
+  -e ARD_PLUS_USER='username' -e ARD_PLUS_PASSWORD='password' \
+  ard-plus-dl download 'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber'
 ```
+
+Alternativ die Variablen in eine Datei schreiben und mit `--env-file` übergeben, damit die Zugangsdaten nicht in der Shell-History landen.
 
 Windows: Host-Pfad mit Backslashes mounten, z. B. `-v C:\Users\Du\Videos:/data`.
 
