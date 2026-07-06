@@ -1,0 +1,21 @@
+name: Shellcheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck
+        run: shellcheck -x ard-plus-dl.sh graphql-queries.sh
+
+      - name: Run tests
+        run: ./tests/run-tests.sh

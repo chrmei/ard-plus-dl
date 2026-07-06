@@ -1,4 +1,7 @@
+# shellcheck shell=bash
 # GraphQL query strings for ARD Plus (POST, no persisted-query hashes).
+# Variables are consumed by ard-plus-dl.sh via source.
+# shellcheck disable=SC2034,SC2016
 
 GRAPHQL_MOVIE_DETAILS='query MovieDetails($movieId: String!, $externalId: String!, $slug: String!, $potentialMovieId: String!) {
   movie: getMovieDetails(idList: [$movieId, $potentialMovieId, $externalId, $slug]) {
