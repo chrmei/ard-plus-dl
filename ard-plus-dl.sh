@@ -179,6 +179,69 @@ sanitize_path_component() {
     printf '%s' "$s"
 }
 
+credentials_file_default() {
+    printf '%s' "${XDG_CONFIG_HOME:-${HOME:-}/.config}/ard-plus-dl/credentials"
+}
+
+load_credentials_file() {
+    local file="$1" line key value perms
+    [[ -n "$file" && -f "$file" && -r "$file" ]] || return 1
+    perms=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null || true)
+    if [[ -n "$perms" && ! "$perms" =~ 00$ ]]; then
+        echo "Warning: credentials file ${file} is readable by group/others (chmod 600 recommended)." >&2
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            username|ARD_PLUS_USER)
+                [[ -z "$username" ]] && username="$value"
+                ;;
+            password|ARD_PLUS_PASSWORD)
+                [[ -z "$password" ]] && password="$value"
+                ;;
+        esac
+    done < "$file"
+    return 0
+}
+
+# Fill in missing credentials from (in order): positional arguments (already
+# assigned), environment variables, credentials file.
+resolve_credentials() {
+    if [[ -z "$username" ]]; then
+        username="${ARD_PLUS_USER:-}"
+    fi
+    if [[ -z "$password" ]]; then
+        password="${ARD_PLUS_PASSWORD:-}"
+    fi
+    if [[ -z "$username" || -z "$password" ]]; then
+        load_credentials_file "${ARD_PLUS_CREDENTIALS_FILE:-$(credentials_file_default)}" || true
+    fi
+}
+
+prompt_credentials() {
+    [[ -t 0 ]] || return 1
+    if [[ -z "$username" ]]; then
+        read -r -p "ARD Plus username: " username
+    fi
+    if [[ -z "$password" ]]; then
+        read -rs -p "ARD Plus password: " password
+        echo
+    fi
+    [[ -n "$username" && -n "$password" ]]
+}
+
+# A run can proceed if a session token already exists, credentials are known,
+# or we can still prompt for them interactively.
+require_auth_source() {
+    [[ -f "$token_file" ]] && return 0
+    [[ -n "$username" && -n "$password" ]] && return 0
+    [[ -t 0 ]] && return 0
+    return 1
+}
+
 resolve_token_file() {
     local state_dir="${XDG_STATE_HOME:-${HOME:-}/.local/state}/ard-plus-dl"
     if [[ -n "${HOME:-}" ]] && mkdir -p "$state_dir" 2>/dev/null; then
@@ -243,6 +306,14 @@ run_yt_dlp() {
 
 # login only if necessary
 login() {
+    if [[ -z "$username" || -z "$password" ]]; then
+        if ! prompt_credentials; then
+            echo "No valid session token and no credentials available." >&2
+            echo "Set ARD_PLUS_USER / ARD_PLUS_PASSWORD, create $(credentials_file_default)," >&2
+            echo "or pass username and password as arguments." >&2
+            exit 1
+        fi
+    fi
     encoded_username=$(printf %s "$username" | jq -s -R -r @uri)
     encoded_password=$(printf %s "$password" | jq -s -R -r @uri)
     token=$("$curlBin" -is 'https://auth.ardplus.de/auth/login?plainRedirect=true&redirectURL=https%3A%2F%2Fwww.ardplus.de%2Flogin%2Fcallback&errorRedirectURL=https%3A%2F%2Fwww.ardplus.de%2Fanmeldung%3Ferror%3Dtrue' \
@@ -656,26 +727,37 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Credentials may come from positional arguments (legacy), the
+# ARD_PLUS_USER/ARD_PLUS_PASSWORD environment variables, or a credentials
+# file. When they are omitted, a lone trailing numeric argument is the skip
+# count.
 if [[ $batch_mode -eq 1 ]]; then
-    username=${1:-}
-    password=${2:-}
-    skip=${3:-}
+    if [[ $# -ge 2 ]]; then
+        username=${1:-}
+        password=${2:-}
+        skip=${3:-}
+    else
+        username=''
+        password=''
+        skip=${1:-}
+    fi
 else
     ardPlusUrl=${1:-}
-    username=${2:-}
-    password=${3:-}
-    skip=${4:-}
+    if [[ $# -ge 3 ]]; then
+        username=${2:-}
+        password=${3:-}
+        skip=${4:-}
+    else
+        username=''
+        password=''
+        skip=${2:-}
+    fi
 fi
 movieId=''
 contentType=''
 token=''
 
-if [[ -z "$username" || -z "$password" ]]; then
-    echo "Credentials missing! Please start the script with:"
-    echo "  ./ard-plus-dl.sh [--automatic] [--links-file <file>] <ard-plus-url> <username> <password>"
-    echo "  ./ard-plus-dl.sh [--automatic] --links-file <file> <username> <password>"
-    exit 1
-fi
+resolve_credentials
 
 if [[ $batch_mode -eq 1 ]]; then
     if [[ -z "$links_file" || ! -f "$links_file" ]]; then
@@ -692,6 +774,9 @@ fi
 
 if [[ -z "$skip" ]]; then
     skip=1
+elif ! [[ "$skip" =~ ^[0-9]+$ ]]; then
+    echo "Invalid skip value: $skip (expected a non-negative number)" >&2
+    exit 1
 fi
 
 check_dependencies
@@ -704,6 +789,16 @@ downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
 mkdir -p "$downloads_dir"
 
 resolve_token_file
+
+if ! require_auth_source; then
+    echo "Credentials missing! Provide them via one of:"
+    echo "  - environment variables: ARD_PLUS_USER and ARD_PLUS_PASSWORD"
+    echo "  - credentials file: $(credentials_file_default) (chmod 600, lines: username=... / password=...)"
+    echo "  - positional arguments (visible to other processes via ps - not recommended):"
+    echo "      ./ard-plus-dl.sh [--automatic] <ard-plus-url> <username> <password> [skip]"
+    echo "      ./ard-plus-dl.sh --links-file <file> <username> <password> [skip]"
+    exit 1
+fi
 
 content_result=$(mktemp)
 RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)

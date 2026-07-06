@@ -301,17 +301,138 @@ test_cleanup_tmp() {
     assert_success 'is a no-op with empty paths' cleanup_tmp
 }
 
+test_credentials_file() {
+    printf '\n[credentials file]\n'
+    local tmp
+    tmp=$(mktemp -d)
+
+    cat >"$tmp/credentials" <<'EOF'
+# comment line
+username=file-user
+
+password=file-pass
+EOF
+    chmod 600 "$tmp/credentials"
+
+    username=''
+    password=''
+    assert_success 'loads credentials file' load_credentials_file "$tmp/credentials"
+    assert_equals 'parses username line' 'file-user' "$username"
+    assert_equals 'parses password line' 'file-pass' "$password"
+
+    username='arg-user'
+    password='arg-pass'
+    load_credentials_file "$tmp/credentials"
+    assert_equals 'does not override existing username' 'arg-user' "$username"
+    assert_equals 'does not override existing password' 'arg-pass' "$password"
+
+    assert_failure 'fails on missing file' load_credentials_file "$tmp/does-not-exist"
+
+    printf 'ARD_PLUS_USER=env-style-user\nARD_PLUS_PASSWORD=env-style-pass\n' >"$tmp/credentials-env-style"
+    chmod 600 "$tmp/credentials-env-style"
+    username=''
+    password=''
+    load_credentials_file "$tmp/credentials-env-style"
+    assert_equals 'accepts ARD_PLUS_USER key' 'env-style-user' "$username"
+    assert_equals 'accepts ARD_PLUS_PASSWORD key' 'env-style-pass' "$password"
+
+    chmod 644 "$tmp/credentials"
+    username=''
+    password=''
+    local warning
+    warning=$(load_credentials_file "$tmp/credentials" 2>&1 >/dev/null)
+    assert_output_contains 'warns about loose permissions' 'readable by group/others' \
+        printf '%s' "$warning"
+}
+
+test_resolve_credentials() {
+    printf '\n[resolve_credentials]\n'
+    local tmp
+    tmp=$(mktemp -d)
+
+    username=''
+    password=''
+    ARD_PLUS_USER='env-user' ARD_PLUS_PASSWORD='env-pass' \
+        ARD_PLUS_CREDENTIALS_FILE="$tmp/none" resolve_credentials
+    assert_equals 'takes username from environment' 'env-user' "$username"
+    assert_equals 'takes password from environment' 'env-pass' "$password"
+
+    username='arg-user'
+    password='arg-pass'
+    ARD_PLUS_USER='env-user' ARD_PLUS_PASSWORD='env-pass' \
+        ARD_PLUS_CREDENTIALS_FILE="$tmp/none" resolve_credentials
+    assert_equals 'positional username wins over environment' 'arg-user' "$username"
+    assert_equals 'positional password wins over environment' 'arg-pass' "$password"
+
+    printf 'username=file-user\npassword=file-pass\n' >"$tmp/credentials"
+    chmod 600 "$tmp/credentials"
+    username=''
+    password=''
+    ARD_PLUS_CREDENTIALS_FILE="$tmp/credentials" resolve_credentials
+    assert_equals 'falls back to credentials file' 'file-user' "$username"
+
+    username=''
+    password=''
+    ARD_PLUS_USER='env-user' ARD_PLUS_PASSWORD='env-pass' \
+        ARD_PLUS_CREDENTIALS_FILE="$tmp/credentials" resolve_credentials
+    assert_equals 'environment wins over credentials file' 'env-user' "$username"
+}
+
+test_require_auth_source() {
+    printf '\n[require_auth_source]\n'
+    local tmp
+    tmp=$(mktemp -d)
+
+    token_file="$tmp/token"
+    printf 'sometoken\n' >"$token_file"
+    username=''
+    password=''
+    assert_success 'token-only run is allowed' require_auth_source
+
+    token_file="$tmp/no-token"
+    username='user'
+    password='pass'
+    assert_success 'credentials without token are allowed' require_auth_source
+
+    username=''
+    password=''
+    assert_failure 'fails without token, credentials, or tty' \
+        require_auth_source </dev/null
+
+    assert_failure 'prompt fails without tty' prompt_credentials </dev/null
+}
+
 test_cli_validation() {
     printf '\n[cli validation]\n'
     local script="$ROOT_DIR/ard-plus-dl.sh"
 
-    assert_exit 'missing credentials' 1 bash "$script"
-    assert_output_contains 'missing url' 'URL or --links-file required' \
+    assert_exit 'missing url' 1 bash "$script"
+    assert_output_contains 'missing url message' 'URL or --links-file required' \
         bash "$script" '' user pass
     assert_output_contains 'links-file requires argument' '--links-file requires a file argument' \
         bash "$script" --links-file
     assert_output_contains 'links file not found' 'Links file missing or not found' \
         bash "$script" --links-file "$FIXTURES_DIR/missing.txt" user pass
+    assert_output_contains 'links file not found without credentials' 'Links file missing or not found' \
+        bash "$script" --links-file "$FIXTURES_DIR/missing.txt"
+    assert_output_contains 'rejects non-numeric skip' 'Invalid skip value' \
+        bash "$script" 'https://www.ardplus.de/details/foo' user pass nonsense
+
+    # End-to-end: no token, no credentials, no tty -> credentials error.
+    # A stub yt-dlp keeps the dependency check happy in minimal environments.
+    local tmp
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/bin" "$tmp/home" "$tmp/cwd"
+    printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/yt-dlp"
+    chmod +x "$tmp/bin/yt-dlp"
+
+    run_isolated() {
+        cd "$tmp/cwd" && env -i HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+            bash "$script" 'https://www.ardplus.de/details/foo' </dev/null
+    }
+    assert_output_contains 'fails without any credential source' 'Credentials missing!' \
+        run_isolated
+    assert_exit 'exits 1 without any credential source' 1 run_isolated
 }
 
 main() {
@@ -327,6 +448,9 @@ main() {
     test_null_safe_filenames
     test_session_payloads
     test_cleanup_tmp
+    test_credentials_file
+    test_resolve_credentials
+    test_require_auth_source
     test_cli_validation
 
     printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
