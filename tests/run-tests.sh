@@ -80,6 +80,31 @@ assert_output_contains() {
 # shellcheck source=../ard-plus-dl.sh
 source "$ROOT_DIR/ard-plus-dl.sh"
 
+test_decode_jwt_header() {
+    printf '\n[decode_jwt_header]\n'
+    assert_equals 'decodes standard JWT header' 'JWT' "$(decode_jwt_header 'eyJ0eXAiOiJKV1QifQ.payload.signature')"
+    assert_equals 'decodes base64url header' 'JWT' "$(decode_jwt_header 'eyJ0eXAiOiJKV1QifQ')"
+    assert_failure 'rejects empty token' decode_jwt_header ''
+}
+
+test_resolve_token_file() {
+    printf '\n[resolve_token_file]\n'
+    local tmp saved_home saved_xdg
+    tmp=$(mktemp -d)
+    work_dir="$tmp"
+    saved_home="${HOME:-}"
+    saved_xdg="${XDG_STATE_HOME:-}"
+    unset XDG_STATE_HOME
+    HOME=''
+    resolve_token_file
+    assert_equals 'falls back to work_dir without HOME' \
+        "$tmp/.ard-plus-dl/token" "$token_file"
+    HOME="$saved_home"
+    if [[ -n "$saved_xdg" ]]; then
+        export XDG_STATE_HOME="$saved_xdg"
+    fi
+}
+
 test_normalize_url() {
     printf '\n[normalize_url]\n'
     assert_equals 'strips trailing slash' \
@@ -234,6 +259,8 @@ test_cli_validation() {
 main() {
     printf 'Running ard-plus-dl tests...\n'
     test_normalize_url
+    test_decode_jwt_header
+    test_resolve_token_file
     test_sanitize_path_component
     test_graphql_response_ok
     test_download_paths

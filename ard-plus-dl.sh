@@ -13,7 +13,7 @@ source "${script_dir}/graphql-queries.sh"
 curlBin=$(which curl)
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
-FILE=ard-plus-token
+token_file=''
 automatic_download=0
 batch_mode=0
 links_file=''
@@ -163,6 +163,39 @@ sanitize_path_component() {
     printf '%s' "$s"
 }
 
+resolve_token_file() {
+    local state_dir="${XDG_STATE_HOME:-${HOME:-}/.local/state}/ard-plus-dl"
+    if [[ -n "${HOME:-}" ]] && mkdir -p "$state_dir" 2>/dev/null; then
+        token_file="${state_dir}/token"
+    else
+        token_file="${work_dir}/.ard-plus-dl/token"
+        mkdir -p "$(dirname "$token_file")"
+    fi
+}
+
+decode_jwt_header() {
+    local jwt="$1" header padded mod
+    header="${jwt%%.*}"
+    [[ -z "$header" ]] && return 1
+    padded=$(printf '%s' "$header" | tr '_-' '/+')
+    mod=$((${#padded} % 4))
+    if [[ $mod -eq 2 ]]; then
+        padded="${padded}=="
+    elif [[ $mod -eq 3 ]]; then
+        padded="${padded}="
+    fi
+    printf '%s' "$padded" | base64 -d 2>/dev/null | jq -r '.typ // empty'
+}
+
+write_token_file() {
+    local saved_umask
+    saved_umask=$(umask)
+    umask 077
+    mkdir -p "$(dirname "$token_file")"
+    printf '%s\n' "$token" >"$token_file"
+    umask "$saved_umask"
+}
+
 record_success() {
     echo "$1" >> "$SUCCESS_FILE"
     log_msg "Recorded success: $1"
@@ -202,10 +235,11 @@ login() {
     -H 'origin: https://www.ardplus.de' \
     -H 'referer: https://www.ardplus.de/' \
     -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i authorization | awk '{print $3}' | tr -d \\r)
-    tokenType=$(echo $token | cut -f1 -d "." | base64 -d | jq -r '.typ')
+    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i '^authorization:' | head -n 1 | awk '{print $3}' | tr -d '\r')
+    token=$(printf '%s' "$token" | tr -d '\r')
+    tokenType=$(decode_jwt_header "$token")
     if [[ "$tokenType" == "JWT" ]]; then
-        echo $token | tr -d \\r > $FILE
+        write_token_file
     else
         echo "Login not possible! Please check credentials and subscription for user $username."
         exit 1
@@ -241,18 +275,28 @@ auth() {
 }
 
 ensure_token() {
-    if [ -f "$FILE" ]; then
-        token=$(<$FILE)
+    if [[ -f "$token_file" ]]; then
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
     else
-        login $username $password
+        login
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
     fi
 
     movieId="a0S010000007GcX"
-    urlParam=$( auth )
-    if [[ "$urlParam" == null ]]; then
-        login $username $password
-        token=$(<$FILE)
-        if [[ -z "$token" ]]; then
+    urlParam=$(auth)
+    if [[ "$urlParam" == null || -z "$urlParam" ]]; then
+        rm -f "$token_file"
+        login
+        if [[ ! -f "$token_file" ]]; then
+            echo "Login not possible! Please check credentials and subscription for user $username."
+            exit 1
+        fi
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
+        urlParam=$(auth)
+        if [[ "$urlParam" == null || -z "$urlParam" ]]; then
             echo "Login not possible! Please check credentials and subscription for user $username."
             exit 1
         fi
@@ -596,6 +640,8 @@ if [[ $batch_mode -eq 1 ]]; then
 fi
 downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
 mkdir -p "$downloads_dir"
+
+resolve_token_file
 
 content_result=$(mktemp)
 RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
