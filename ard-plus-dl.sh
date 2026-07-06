@@ -13,7 +13,7 @@ source "${script_dir}/graphql-queries.sh"
 curlBin=$(which curl)
 # use snap curl version if your OS is outdated
 #curlBin=/snap/bin/curl
-FILE=ard-plus-token
+token_file=''
 automatic_download=0
 batch_mode=0
 links_file=''
@@ -152,6 +152,7 @@ skip_if_exists() {
 normalize_url() {
     local url="$1"
     url="${url%%#*}"
+    url="${url%%\?*}"
     url="${url%"${url##*[![:space:]]}"}"
     url="${url#"${url%%[![:space:]]*}"}"
     url="${url%/}"
@@ -161,6 +162,39 @@ normalize_url() {
 sanitize_path_component() {
     local s="${1//\// }"
     printf '%s' "$s"
+}
+
+resolve_token_file() {
+    local state_dir="${XDG_STATE_HOME:-${HOME:-}/.local/state}/ard-plus-dl"
+    if [[ -n "${HOME:-}" ]] && mkdir -p "$state_dir" 2>/dev/null; then
+        token_file="${state_dir}/token"
+    else
+        token_file="${work_dir}/.ard-plus-dl/token"
+        mkdir -p "$(dirname "$token_file")"
+    fi
+}
+
+decode_jwt_header() {
+    local jwt="$1" header padded mod
+    header="${jwt%%.*}"
+    [[ -z "$header" ]] && return 1
+    padded=$(printf '%s' "$header" | tr '_-' '/+')
+    mod=$((${#padded} % 4))
+    if [[ $mod -eq 2 ]]; then
+        padded="${padded}=="
+    elif [[ $mod -eq 3 ]]; then
+        padded="${padded}="
+    fi
+    printf '%s' "$padded" | base64 -d 2>/dev/null | jq -r '.typ // empty'
+}
+
+write_token_file() {
+    local saved_umask
+    saved_umask=$(umask)
+    umask 077
+    mkdir -p "$(dirname "$token_file")"
+    printf '%s\n' "$token" >"$token_file"
+    umask "$saved_umask"
 }
 
 record_success() {
@@ -202,10 +236,11 @@ login() {
     -H 'origin: https://www.ardplus.de' \
     -H 'referer: https://www.ardplus.de/' \
     -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i authorization | awk '{print $3}' | tr -d \\r)
-    tokenType=$(echo $token | cut -f1 -d "." | base64 -d | jq -r '.typ')
+    --data-raw "username=${encoded_username}&password=${encoded_password}" | grep -i '^authorization:' | head -n 1 | awk '{print $3}' | tr -d '\r')
+    token=$(printf '%s' "$token" | tr -d '\r')
+    tokenType=$(decode_jwt_header "$token")
     if [[ "$tokenType" == "JWT" ]]; then
-        echo $token | tr -d \\r > $FILE
+        write_token_file
     else
         echo "Login not possible! Please check credentials and subscription for user $username."
         exit 1
@@ -214,45 +249,83 @@ login() {
 
 # cleanup after each episode and at the end
 cleanup() {
-    deleteToken=$("$curlBin" -s 'https://token.ardplus.de/token/session/playback/delete' \
+    [[ -n "$movieId" && -n "$contentType" ]] || return 0
+    local payload
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{contentId: $contentId, contentType: $contentType}')
+    "$curlBin" -s 'https://token.ardplus.de/token/session/playback/delete' \
     -H 'authority: token.ardplus.de' \
     -H 'content-type: application/json' \
     -H "cookie: sid=$token" \
     -H 'origin: https://www.ardplus.de' \
     -H 'referer: https://www.ardplus.de/' \
     -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-    --data-raw "{\"contentId\":\"$movieId\",\"contentType\":\"CmsMovie\"}" \
-    --compressed)
+    --data-raw "$payload" \
+    --compressed >/dev/null
 }
 
 # get authorization for content
 auth() {
-    auth=$("$curlBin" -s 'https://token.ardplus.de/token/session' \
+    [[ -n "$movieId" && -n "$contentType" ]] || { echo ""; return 0; }
+    local payload auth_response urlParam
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{
+            contentId: $contentId,
+            contentType: $contentType,
+            download: false,
+            appInfo: {platform: "web", appVersion: "1.0.0", build: "web", bundleIdentifier: "web"},
+            deviceInfo: {
+                isTouchDevice: false,
+                isTablet: false,
+                isFireOS: false,
+                appPlatform: "web",
+                isIOS: false,
+                isCastReceiver: false,
+                isSafari: false,
+                isFirefox: false
+            }
+        }')
+    auth_response=$("$curlBin" -s 'https://token.ardplus.de/token/session' \
         -H 'authority: token.ardplus.de' \
         -H 'content-type: application/json' \
         -H "cookie: sid=$token" \
         -H 'origin: https://www.ardplus.de' \
         -H 'referer: https://www.ardplus.de/' \
         -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36' \
-        --data-raw "{\"contentId\":\"$movieId\",\"contentType\":\"CmsEpisode\",\"download\":false,\"appInfo\":{\"platform\":\"web\",\"appVersion\":\"1.0.0\",\"build\":\"web\",\"bundleIdentifier\":\"web\"},\"deviceInfo\":{\"isTouchDevice\":false,\"isTablet\":false,\"isFireOS\":false,\"appPlatform\":\"web\",\"isIOS\":false,\"isCastReceiver\":false,\"isSafari\":false,\"isFirefox\":false}}" \
+        --data-raw "$payload" \
         --compressed)
-    urlParam=$(echo ${auth} | jq -r '.authorizationParams')
+    urlParam=$(echo "$auth_response" | jq -r '.authorizationParams // empty')
     echo "$urlParam"
 }
 
 ensure_token() {
-    if [ -f "$FILE" ]; then
-        token=$(<$FILE)
+    if [[ -f "$token_file" ]]; then
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
     else
-        login $username $password
+        login
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
     fi
 
     movieId="a0S010000007GcX"
-    urlParam=$( auth )
-    if [[ "$urlParam" == null ]]; then
-        login $username $password
-        token=$(<$FILE)
-        if [[ -z "$token" ]]; then
+    contentType="CmsMovie"
+    urlParam=$(auth)
+    if [[ "$urlParam" == null || -z "$urlParam" ]]; then
+        rm -f "$token_file"
+        login
+        if [[ ! -f "$token_file" ]]; then
+            echo "Login not possible! Please check credentials and subscription for user $username."
+            exit 1
+        fi
+        token=$(<"$token_file")
+        token=$(printf '%s' "$token" | tr -d '\r\n')
+        urlParam=$(auth)
+        if [[ "$urlParam" == null || -z "$urlParam" ]]; then
             echo "Login not possible! Please check credentials and subscription for user $username."
             exit 1
         fi
@@ -268,6 +341,10 @@ download_url() {
     DOWNLOAD_FAIL_REASON=''
     showPath=$(echo "$ardPlusUrl" | rev | cut -d "/" -f1 | rev)
     showId=$(echo "$showPath" | cut -d "-" -f1)
+    if [[ -z "$showId" ]]; then
+        DOWNLOAD_FAIL_REASON="could not parse content ID from URL"
+        return 1
+    fi
 
     content_variables=$(jq -nc \
         --arg movieId "$showId" \
@@ -289,6 +366,7 @@ download_url() {
 
     if [[ "$movie" != null ]]; then
         movieId=$(echo "$movie" | jq -r '.id')
+        contentType="CmsMovie"
         name=$(echo "$movie" | jq -r '.title // empty')
         videoUrl=$(echo "$movie" | jq -r '.videoSource.dashUrl')
         year=$(echo "$movie" | jq -r '.productionYear // empty')
@@ -302,8 +380,8 @@ download_url() {
         if skip_if_exists "$filename"; then
             return 0
         fi
-        urlParam=$( auth )
-        if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+        urlParam=$(auth)
+        if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
             DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for movie"
             cleanup
             return 1
@@ -382,6 +460,7 @@ download_url() {
             do
                 local name videoUrl episode filename urlParam downloadUrl safe_episode_title
                 movieId=$(echo "$episode_line" | jq -r '.id')
+                contentType="CmsEpisode"
                 name=$(echo "$episode_line" | jq -r '.title // empty')
                 videoUrl=$(echo "$episode_line" | jq -r '.videoUrl')
                 episode=$(echo "$episode_line" | jq -r '.episodeNo // empty')
@@ -394,8 +473,8 @@ download_url() {
                 if skip_if_exists "$filename"; then
                     continue
                 fi
-                urlParam=$( auth )
-                if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+                urlParam=$(auth)
+                if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
                     DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
                     cleanup
                     return 1
@@ -411,7 +490,8 @@ download_url() {
         done
         return 0
     elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
-        local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line
+        local tatortCity tatortResponse tatortCityEpisodes amount cityCapitalized episode_line tatort_result
+        tatort_result=$(mktemp)
         tatortCity=$(echo $showPath | cut -d "-" -f2)
         tatortResponse=$("$curlBin" -s "https://www.ardplus.de/kategorie/$showPath" \
         --header 'authority: data.ardplus.de' \
@@ -423,6 +503,7 @@ download_url() {
 
         tatortCityEpisodes=$(echo $tatortResponse | perl -0777 -ne 'print "$1\n" if /<script type="application\/ld\+json">\s*(.*?)\s*<\/script>/s')
         if [[ -z "$tatortCityEpisodes" ]]; then
+            rm -f "$tatort_result"
             DOWNLOAD_FAIL_REASON="could not parse Tatort episode list from category page"
             return 1
         fi
@@ -447,19 +528,21 @@ download_url() {
                 --arg movieId "$episodeId" \
                 '{movieId: $movieId, externalId: "", slug: "", potentialMovieId: ""}')
 
-            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "current-tatort-episode.txt"); then
+            if ! episodeDetailsStatus=$(fetch_graphql "MovieDetails" "$GRAPHQL_MOVIE_DETAILS" "$episode_variables" "$tatort_result"); then
                 local tatort_error
-                tatort_error=$(jq -r '.errors[0].message // empty' "current-tatort-episode.txt" 2>/dev/null)
+                tatort_error=$(jq -r '.errors[0].message // empty' "$tatort_result" 2>/dev/null)
                 if [[ -n "$tatort_error" ]]; then
                     DOWNLOAD_FAIL_REASON="could not fetch Tatort episode details (graphql: ${tatort_error})"
                 else
                     DOWNLOAD_FAIL_REASON="could not fetch Tatort episode details (retries exhausted)"
                 fi
+                rm -f "$tatort_result"
                 return 1
             fi
 
-            episodeDetails=$(cat current-tatort-episode.txt)
+            episodeDetails=$(cat "$tatort_result")
             movieId=$(echo "$episodeDetails" | jq -r '.data.movie.id')
+            contentType="CmsMovie"
             name=$(echo "$episodeDetails" | jq -r '.data.movie.title // empty')
             videoUrl=$(echo "$episodeDetails" | jq -r '.data.movie.videoSource.dashUrl')
             year=$(echo "$episodeDetails" | jq -r '.data.movie.productionYear // empty')
@@ -485,21 +568,24 @@ download_url() {
             if skip_if_exists "$filename"; then
                 continue
             fi
-            urlParam=$( auth )
-            if [[ "$urlParam" == null || -z "$videoUrl" || "$videoUrl" == null ]]; then
+            urlParam=$(auth)
+            if [[ -z "$urlParam" || -z "$videoUrl" || "$videoUrl" == null ]]; then
                 DOWNLOAD_FAIL_REASON="missing playback authorization or video URL for ${filename}"
                 cleanup
+                rm -f "$tatort_result"
                 return 1
             fi
             downloadUrl=${videoUrl}?${urlParam}
             log_msg "Lade ${filename}..."
             if ! run_yt_dlp "$downloadUrl" "$filename" "$filename"; then
                 cleanup
+                rm -f "$tatort_result"
                 return 1
             fi
             cleanup
             sleep 1
         done < <(echo "$tatortCityEpisodes" | jq -c '.itemListElement[]' | tail -n +$episode_skip )
+        rm -f "$tatort_result"
         return 0
     else
         if [[ -n "$(echo "$contentResult" | jq -r '.errors[0].message // empty')" ]]; then
@@ -512,12 +598,20 @@ download_url() {
     fi
 }
 
-# intercept CTRL+C click to clean up before exit
-term() {
+cleanup_tmp() {
+    # season_result/tatort_result are locals of download_url; they are still in
+    # scope when a signal interrupts the download loops and empty otherwise.
+    local f
+    for f in "${content_result:-}" "${season_result:-}" "${tatort_result:-}"; do
+        [[ -n "$f" ]] && rm -f "$f"
+    done
+    return 0
+}
+
+handle_interrupt() {
     echo "CTRL+C pressed. Cleanup and exit!"
     cleanup
-    rm -f $content_result
-    exit 0
+    exit 130
 }
 
 main() {
@@ -558,6 +652,7 @@ else
     skip=$4
 fi
 movieId=''
+contentType=''
 token=''
 
 if [[ -z "$username" || -z "$password" ]]; then
@@ -591,6 +686,8 @@ fi
 downloads_dir="${DOWNLOADS_DIR:-${work_dir}/downloads}"
 mkdir -p "$downloads_dir"
 
+resolve_token_file
+
 content_result=$(mktemp)
 RUN_TS=$(date +%Y-%m-%d_%H-%M-%S)
 
@@ -602,7 +699,8 @@ if [[ $batch_mode -eq 1 ]]; then
     LOG_FILE="$logs_dir/download_log_${RUN_TS}.txt"
     touch "$SUCCESS_FILE" "$FAILED_FILE" "$LOG_FILE"
 fi
-trap term SIGINT
+trap cleanup_tmp EXIT
+trap handle_interrupt INT TERM
 
 ensure_token
 
@@ -643,15 +741,13 @@ if [[ $batch_mode -eq 1 ]]; then
     log_msg "Successful links: ${SUCCESS_FILE}"
     log_msg "Failed links: ${FAILED_FILE}"
 else
-    if download_url "$ardPlusUrl" "$skip"; then
+    if download_url "$(normalize_url "$ardPlusUrl")" "$skip"; then
         cleanup
     else
         cleanup
         exit 1
     fi
 fi
-
-rm -f $content_result
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

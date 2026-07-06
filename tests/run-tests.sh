@@ -80,6 +80,31 @@ assert_output_contains() {
 # shellcheck source=../ard-plus-dl.sh
 source "$ROOT_DIR/ard-plus-dl.sh"
 
+test_decode_jwt_header() {
+    printf '\n[decode_jwt_header]\n'
+    assert_equals 'decodes standard JWT header' 'JWT' "$(decode_jwt_header 'eyJ0eXAiOiJKV1QifQ.payload.signature')"
+    assert_equals 'decodes base64url header' 'JWT' "$(decode_jwt_header 'eyJ0eXAiOiJKV1QifQ')"
+    assert_failure 'rejects empty token' decode_jwt_header ''
+}
+
+test_resolve_token_file() {
+    printf '\n[resolve_token_file]\n'
+    local tmp saved_home saved_xdg
+    tmp=$(mktemp -d)
+    work_dir="$tmp"
+    saved_home="${HOME:-}"
+    saved_xdg="${XDG_STATE_HOME:-}"
+    unset XDG_STATE_HOME
+    HOME=''
+    resolve_token_file
+    assert_equals 'falls back to work_dir without HOME' \
+        "$tmp/.ard-plus-dl/token" "$token_file"
+    HOME="$saved_home"
+    if [[ -n "$saved_xdg" ]]; then
+        export XDG_STATE_HOME="$saved_xdg"
+    fi
+}
+
 test_normalize_url() {
     printf '\n[normalize_url]\n'
     assert_equals 'strips trailing slash' \
@@ -91,6 +116,12 @@ test_normalize_url() {
     assert_equals 'trims whitespace' \
         'https://www.ardplus.de/details/foo' \
         "$(normalize_url '  https://www.ardplus.de/details/foo  ')"
+    assert_equals 'strips query string' \
+        'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt' \
+        "$(normalize_url 'https://www.ardplus.de/details/a0S01000000EWYi-lola-rennt?utm_source=share')"
+    assert_equals 'strips query and trailing slash' \
+        'https://www.ardplus.de/details/foo' \
+        "$(normalize_url 'https://www.ardplus.de/details/foo/?ref=1')"
 }
 
 test_sanitize_path_component() {
@@ -218,6 +249,58 @@ test_null_safe_filenames() {
     assert_equals 'series without episode number uses placeholder' 'Show S01E?? - Pilot' "$filename"
 }
 
+test_session_payloads() {
+    printf '\n[session payloads]\n'
+    local payload
+    movieId='abc123'
+    contentType='CmsEpisode'
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType "$contentType" \
+        '{
+            contentId: $contentId,
+            contentType: $contentType,
+            download: false,
+            appInfo: {platform: "web", appVersion: "1.0.0", build: "web", bundleIdentifier: "web"},
+            deviceInfo: {
+                isTouchDevice: false,
+                isTablet: false,
+                isFireOS: false,
+                appPlatform: "web",
+                isIOS: false,
+                isCastReceiver: false,
+                isSafari: false,
+                isFirefox: false
+            }
+        }')
+    assert_equals 'auth payload uses tracked contentType' 'CmsEpisode' \
+        "$(echo "$payload" | jq -r '.contentType')"
+    payload=$(jq -nc \
+        --arg contentId "$movieId" \
+        --arg contentType 'CmsMovie' \
+        '{contentId: $contentId, contentType: $contentType}')
+    assert_equals 'cleanup payload uses tracked contentType' 'CmsMovie' \
+        "$(echo "$payload" | jq -r '.contentType')"
+    movieId=''
+    contentType=''
+    assert_success 'cleanup skips without content context' cleanup
+}
+
+test_cleanup_tmp() {
+    printf '\n[cleanup_tmp]\n'
+    content_result=$(mktemp)
+    season_result=$(mktemp)
+    tatort_result=$(mktemp)
+    cleanup_tmp
+    assert_failure 'removes content_result temp file' test -f "$content_result"
+    assert_failure 'removes season_result temp file' test -f "$season_result"
+    assert_failure 'removes tatort_result temp file' test -f "$tatort_result"
+    content_result=''
+    season_result=''
+    tatort_result=''
+    assert_success 'is a no-op with empty paths' cleanup_tmp
+}
+
 test_cli_validation() {
     printf '\n[cli validation]\n'
     local script="$ROOT_DIR/ard-plus-dl.sh"
@@ -234,12 +317,16 @@ test_cli_validation() {
 main() {
     printf 'Running ard-plus-dl tests...\n'
     test_normalize_url
+    test_decode_jwt_header
+    test_resolve_token_file
     test_sanitize_path_component
     test_graphql_response_ok
     test_download_paths
     test_skip_logic
     test_episode_json_parsing
     test_null_safe_filenames
+    test_session_payloads
+    test_cleanup_tmp
     test_cli_validation
 
     printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

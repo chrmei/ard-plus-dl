@@ -1,6 +1,7 @@
 downloads/
 links.txt
 .cursor/
+.ard-plus-dl/
 **/*ard-plus-token
 logs/
 **/*.DS_Store
