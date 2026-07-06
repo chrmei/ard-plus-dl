@@ -146,6 +146,16 @@ test_skip_logic() {
     assert_failure 'force redownload ignores complete file' skip_if_exists 'Complete Show/movie'
 }
 
+test_episode_json_parsing() {
+    printf '\n[episode json parsing]\n'
+    local episodes='[{"id":"1","episodeNo":1,"title":"Say \"Hi\" Ep","videoUrl":"https://example.com/v"}]'
+    local episode_line title
+
+    episode_line=$(echo "$episodes" | jq -c '.[]' | head -n 1)
+    title=$(echo "$episode_line" | jq -r '.title')
+    assert_equals 'preserves quotes in episode title' 'Say "Hi" Ep' "$title"
+}
+
 test_cli_validation() {
     printf '\n[cli validation]\n'
     local script="$ROOT_DIR/ard-plus-dl.sh"
@@ -165,6 +175,7 @@ main() {
     test_graphql_response_ok
     test_download_paths
     test_skip_logic
+    test_episode_json_parsing
     test_cli_validation
 
     printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

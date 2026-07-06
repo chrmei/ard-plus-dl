@@ -366,7 +366,7 @@ download_url() {
                 apply_episode_skip=0
             fi
 
-            while read episode_line
+            while read -r episode_line
             do
                 local name videoUrl episode filename urlParam downloadUrl
                 movieId=$(echo "$episode_line" | jq -r '.id')
@@ -390,7 +390,7 @@ download_url() {
                     return 1
                 fi
                 cleanup
-            done < <(echo "$episodes" | sed 's/\\"//g' | jq -c '.[]' | tail -n +$tail_from)
+            done < <(echo "$episodes" | jq -c '.[]' | tail -n +"$tail_from")
         done
         return 0
     elif [[ "$ardPlusUrl" == *"tatort"* ]]; then
@@ -422,7 +422,7 @@ download_url() {
         fi
         episode_skip=$((episode_skip + 1))
 
-        while read episode_line
+        while read -r episode_line
         do
             local episodeId episode_variables episodeDetailsStatus episodeDetails name videoUrl year customData episode team city filename urlParam downloadUrl
             episodeId=$(echo "$episode_line" | jq -r '.item.url' | sed -E 's#.*/details/([^/-]+).*#\1#')
