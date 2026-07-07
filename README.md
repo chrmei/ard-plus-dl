@@ -122,6 +122,8 @@ docker run --rm -it -v "$(pwd)/:/data" \
   ard-plus-dl download 'https://www.ardplus.de/details/a0T01000003LeBR-vorstadtweiber'
 ```
 
+Das Arbeitsverzeichnis im Container ist `/data` (entspricht dem gemounteten Host-Verzeichnis). Downloads landen unter `/data/downloads`; die Session-Token-Datei wird unter `/data/ard-plus-dl/token` abgelegt und bleibt über `--rm`-Läufe hinweg erhalten, solange `/data` gemountet ist.
+
 Alternativ die Variablen in eine Datei schreiben und mit `--env-file` übergeben, damit die Zugangsdaten nicht in der Shell-History landen.
 
 Windows: Host-Pfad mit Backslashes mounten, z. B. `-v C:\Users\Du\Videos:/data`.
